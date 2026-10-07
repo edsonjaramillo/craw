@@ -14,6 +14,7 @@
     "cheerio": "^1.2.0",
     "drizzle-orm": "1.0.0-rc.4",
     "fast-xml-parser": "^5.11.2",
+    "ipaddr.js": "^2.5.0",
     "robots-parser": "^3.0.1",
     "zod": "^4.6.5"
   },
@@ -21,6 +22,7 @@
     "@types/bun": "latest",
     "@types/node": "^26.6.4",
     "drizzle-kit": "1.0.0-rc.4",
+    "hono": "^4.13.13",
     "oxfmt": "^0.72.0",
     "oxlint": "^1.87.0",
     "oxlint-tsgolint": "^7.0.2003",
