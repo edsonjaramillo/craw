@@ -68,6 +68,12 @@ and `audit-report.html` in the working directory. It returns the retained run,
 rendered report, and report path. Each invocation retains its own effective
 configuration, timestamps, outcome, and coverage evidence. Reports escape
 website-derived evidence and distinguish execution completion from coverage.
+The standalone artifact needs no external services. Its issue index groups response
+outcomes, informational redirects, SEO observations, and within-run duplicates.
+Affected destinations link to retained evidence and their navigation/canonical
+source pages, including original hrefs, response headers, and redirect evidence.
+Summary counts distinguish unique original destinations, SEO observations/duplicate
+groups, and coverage evidence entries (which may overlap destination outcomes).
 Refused, robots-excluded, unavailable, and inconclusive destinations are never
 reported as healthy. Fatal execution/storage errors exit nonzero, while
 attempting to preserve a failed run and partial report independently.
@@ -146,7 +152,10 @@ are compared after trimming and collapsing whitespace, preserving case. Duplicat
 groups are warnings with affected pages and original values, retained in the
 `duplicate_metadata` SQLite table and the report. Only audited pages within this
 run contribute; partial coverage is not a website-wide inventory, and retained
-runs never contribute to each other's groups. Canonical checks are not yet implemented.
+runs never contribute to each other's groups. Canonical declarations retain source,
+resolved target, and check evidence without expanding canonical-only targets.
+Missing declarations are informational, conflicts are warnings, and confirmed
+broken targets are errors; unsupported or unresolved targets do not establish health.
 Non-HTML GET checks establish response health, not complete download integrity;
 response streams are canceled without downloading the entire body.
 

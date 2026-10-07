@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { load } from "cheerio";
+
 import { runAudit } from "../../src/audit-run";
 import type { FixtureScenarioInput } from "../fixtures/scenarios";
 import { startFixture } from "../fixtures/server";
@@ -131,7 +133,7 @@ test("counts duplicate metadata groups as SEO warnings in the report", async () 
     { path: "/blog", responses: [page("Shared", "Shared", '<a href="/blog/second">second</a>')] },
     { path: "/blog/second", responses: [page("Shared", "Shared")] },
   ]);
-  expect(result.report).toContain("SEO warnings: 2");
+  expect(load(result.report)('[data-count="seo-warnings"]').text()).toBe("2");
 });
 
 test("excludes empty values, error pages and check-only destinations, and counts each audited page once", async () => {

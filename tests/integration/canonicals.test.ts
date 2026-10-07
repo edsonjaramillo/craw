@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { load } from "cheerio";
+
 import { runAudit } from "../../src/audit-run";
 import { ManualClock, flush } from "../fixtures/clock";
 import type { FixtureScenarioInput } from "../fixtures/scenarios";
@@ -132,7 +134,7 @@ test("resolves canonical evidence with base URLs and fragments without expanding
   expect(result.report).not.toContain("/blog/never");
   expect(result.report).not.toContain("duplicate-title — within this run");
   expect(result.report).not.toContain("duplicate-description — within this run");
-  expect(result.report).toContain("Pages eligible for SEO: 2");
+  expect(load(result.report)('[data-count="seo-pages"]').text()).toBe("2");
   expect(result.report).toContain("../target?b=2&amp;a=1#first");
   expect(result.report).toContain("Canonical declarations");
 });
@@ -186,7 +188,7 @@ test("allows cross-boundary canonicals, reports conflicts and only confirmed bro
   } finally {
     db.close();
   }
-  expect(result.report).toContain("SEO errors: 2");
+  expect(load(result.report)('[data-count="seo-errors"]').text()).toBe("2");
   expect(result.report).toContain("conflicting-canonicals");
   expect(result.report).toContain("https://other.example/alias");
 });

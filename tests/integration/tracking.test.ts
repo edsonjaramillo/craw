@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { load } from "cheerio";
+
 import { runAudit } from "../../src/audit-run";
 import type { FixtureScenarioInput } from "../fixtures/scenarios";
 import { startFixture } from "../fixtures/server";
@@ -206,8 +208,8 @@ for (const [limits, pageCount, checkedUrls, budget] of [
     expect(result.run.destinations).toHaveLength(6);
     expect(result.requests.some((url) => url.endsWith("/never"))).toBe(false);
     expect(result.report).toContain(budget);
-    expect(result.report).toContain("Pages eligible for SEO: 2");
-    expect(result.report).toContain("Destinations retained: 6");
+    expect(load(result.report)('[data-count="seo-pages"]').text()).toBe("2");
+    expect(load(result.report)('[data-count="destinations"]').text()).toBe("6");
     const db = new Database(result.databasePath, { readonly: true });
     try {
       expect(db.query("SELECT * FROM pages").all()).toHaveLength(2);

@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 
+export { renderReport } from "./audit-report";
+
 import type { AuditConfig } from "./audit-config";
 import type { CanonicalDeclaration } from "./canonicals";
 import type { DuplicateMetadata, SeoObservation } from "./seo";
@@ -181,55 +183,4 @@ export function persistRun(path: string, run: AuditRun): void {
   } finally {
     db.close();
   }
-}
-
-function escape(value: string): string {
-  return value.replaceAll(
-    /[&<>"']/gu,
-    (character) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
-  );
-}
-export function renderReport(run: AuditRun): string {
-  const results = run.destinations
-    .map((destination) => {
-      const sources = run.links.filter((link) => link.destinationUrl === destination.url);
-      return `<section><h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Crawl identity</dt><dd>${escape(destination.crawlIdentity)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
-<h3>Source pages and discovered URL evidence</h3><ul>${sources.map((link) => `<li>${escape(link.sourceUrl)} — href: ${escape(link.href)}</li>`).join("")}</ul>
-${destination.finalUrl === undefined ? "" : `<h3>Final response</h3><p>${escape(destination.finalUrl)}</p><pre>${escape(JSON.stringify(destination.responseHeaders ?? {}, null, 2))}</pre>`}
-${(destination.redirects?.length ?? 0) > 0 ? `<h3>Informational redirects</h3><ul>${destination.redirects!.map((redirect) => `<li>${escape(redirect.url)} — HTTP ${redirect.status} → ${escape(redirect.target ?? "Unresolved target")} (Location: ${escape(redirect.location)}; after ${redirect.attempts} attempts)<pre>${escape(JSON.stringify(redirect.responseHeaders, null, 2))}</pre></li>`).join("")}</ul>` : ""}</section>`;
-    })
-    .join("");
-  const observationGroups = Map.groupBy(run.observations, (observation) => observation.kind);
-  const seo = [...observationGroups]
-    .map(
-      ([kind, observations]) =>
-        `<section><h3>${escape(kind)}</h3><ul>${observations.map((observation) => `<li><strong>${escape(observation.severity)}</strong> — ${escape(observation.url)}${observation.scope === undefined ? "" : ` — scope: ${escape(observation.scope)} (${escape(observation.source!)})`}<pre>${escape(observation.evidence)}</pre></li>`).join("")}</ul></section>`,
-    )
-    .join("");
-  const duplicates = run.duplicateMetadata
-    .map(
-      (group) =>
-        `<section><h3>${escape(group.kind)} — within this run</h3><p><strong>${group.severity}</strong> — compared value: ${escape(group.value)}</p><h4>Affected pages and supporting values</h4><ul>${group.pages.map((page) => `<li>${escape(page.url)}<pre>${escape(JSON.stringify(page.values))}</pre></li>`).join("")}</ul></section>`,
-    )
-    .join("");
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><title>Website audit</title>
-<style>body{font:1rem system-ui;max-width:70rem;margin:2rem auto;padding:1rem}dt,h2{font-weight:bold}dd{overflow-wrap:anywhere}</style>
-<h1>Website audit</h1>${run.executionStatus === "completed" ? "" : "<p>Partial report: execution stopped at a configured limit or fatal failure.</p>"}<p>${run.destinations.length === 1 ? "Single-destination coverage: this" : "This"} run does not establish complete website health. SEO observations do not establish indexing intent or how search engines resolve directives.</p>
-<dl><dt>Run</dt><dd>${escape(run.id)}</dd><dt>Execution</dt><dd>${run.executionStatus}</dd><dt>Started</dt><dd>${escape(run.startedAt)}</dd><dt>Finished</dt><dd>${escape(run.finishedAt)}</dd></dl>
-<h2>Summary</h2><p>Destinations retained: ${run.destinations.length}. Confirmed broken links: ${run.destinations.filter((destination) => destination.outcome === "confirmed-broken").length}. Pages eligible for SEO: ${run.pages.length}. Coverage limitations: ${run.limitations.length}. SEO errors: ${run.observations.filter((observation) => observation.severity === "error").length}. SEO warnings: ${run.observations.filter((observation) => observation.severity === "warning").length + run.duplicateMetadata.length}. SEO informational observations: ${run.observations.filter((observation) => observation.severity === "info").length}.</p>
-<h2>Pages</h2><ul>${run.pages.map((page) => `<li>${escape(page.url)} — depth ${page.depth}, crawl identity: ${escape(page.crawlIdentity)}</li>`).join("")}</ul>
-${results}
-<h2>Canonical declarations</h2><ul>${run.canonicals
-    .map((declaration) => {
-      const check = run.destinations.find(
-        (destination) => destination.url === declaration.destinationUrl,
-      );
-      return `<li>${escape(declaration.sourceUrl)} — href: ${escape(declaration.href ?? "(missing)")} — target: ${escape(declaration.destinationUrl ?? "Unresolved")}<pre>${escape(declaration.evidence)}${check ? ` ${escape(check.outcome)}: ${escape(check.evidence)}` : ""}</pre></li>`;
-    })
-    .join("")}</ul>
-<h2>Page-local SEO observations</h2>${seo}
-<h2>Duplicate metadata within this run</h2><p>Only audited pages in this run are compared; these groups are not a website-wide inventory.</p>${duplicates}
-<h2>Coverage limitations</h2><ul>${run.limitations.map((value) => `<li>${escape(value)}</li>`).join("")}</ul>
-<h2>Effective configuration</h2><pre>${escape(JSON.stringify(run.configuration, null, 2))}</pre></html>`;
 }

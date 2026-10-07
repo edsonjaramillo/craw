@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { load } from "cheerio";
+
 import { runAudit, systemClock } from "../../src/audit-run";
 import { ManualClock, flush } from "../fixtures/clock";
 
@@ -138,7 +140,7 @@ test("completed runs retain explicit boundary and check-only coverage exclusions
   expect(result.report).toContain(
     "Canonical-only target excluded HTML discovery and SEO eligibility",
   );
-  expect(result.report).toContain("Coverage limitations: 3");
+  expect(load(result.report)('[data-count="coverage-limitations"]').text()).toBe("3");
   const db = new Database(paths.databasePath, { readonly: true });
   try {
     expect(db.query("SELECT evidence FROM coverage_limitations").all()).toHaveLength(3);
