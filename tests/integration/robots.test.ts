@@ -12,7 +12,7 @@ for (const [status, body, expected, dispatched] of [
   [403, "", "robots-excluded", false],
   [503, "", "robots-unavailable", false],
   [429, "", "robots-unavailable", false],
-  [302, "", "robots-unavailable", false],
+  [302, "", "refused", false],
   [200, "User-agent: *\nDisallow: /", "robots-excluded", false],
   [200, "User-agent: *\nDisallow: /\n\nUser-agent: MyAudit\nAllow: /", "successful", true],
   [200, "User-agent: MyAudit\nDisallow: /", "robots-excluded", false],

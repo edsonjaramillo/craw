@@ -67,6 +67,7 @@ export function startFixture(
     const routeIndex = scenario.routes.findIndex(
       (route) =>
         (route.hostname === undefined || route.hostname === logicalUrl.hostname) &&
+        (route.method === undefined || route.method === request.method) &&
         route.path === logicalUrl.pathname + logicalUrl.search,
     );
     const route = scenario.routes[routeIndex];

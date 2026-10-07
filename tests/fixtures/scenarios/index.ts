@@ -21,6 +21,7 @@ export const scenarioSchema = z.strictObject({
       z.strictObject({
         path: z.string().startsWith("/"),
         hostname: z.string().min(1).optional(),
+        method: z.enum(["GET", "HEAD"]).optional(),
         responses: z.array(responseSchema).min(1),
       }),
     )

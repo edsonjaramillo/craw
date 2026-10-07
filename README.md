@@ -3,7 +3,7 @@
 A Bun website auditor, under development. The current flow audits only the
 starting destination, with public-only, address-pinned HTTP(S), robots rules,
 retained SQLite runs, and a standalone HTML report. It does not yet discover
-links, inspect SEO, or follow redirects.
+links or inspect SEO. Public, robots-permitted redirects are followed for response health.
 
 ## Configuration and execution
 
@@ -85,19 +85,28 @@ compressed robots rules are treated as unavailable rather than interpreted as
 empty rules. Destination response bodies are canceled after status is
 established; no full-download integrity or SEO claim is made. Robots 404/410
 allows access, 401/403 excludes all, and unavailable rules fail closed. Neither
-robots nor destination redirects are followed. Crawlee is not dispatched in
+robots nor destination redirects can bypass public-address validation, connection
+pinning, request pacing, retries, or the run deadline. Robots redirects are
+bootstrapped without recursive robots retrieval; destination hops are authorized
+against rules cached by origin and evaluated for each path. Crawlee is not dispatched in
 this single-destination stage, so its internals cannot issue unguarded requests.
 HTTP 408/429/5xx and network failures receive at most the configured number of
 retries (two by default). Backoff starts at one second, doubles, and caps at thirty
 seconds; a valid Retry-After delay or HTTP date can extend the wait. Exhausted
 robots retrieval skips the destination and records unavailable coverage. Invalid
 or oversized robots bodies and public-policy refusals are not retried.
+Redirects follow at most `requests.maxRedirectHops` hops (zero disables following).
+Loops, exhausted hop limits, and malformed locations are distinct outcomes, never
+confirmed broken links. Informational redirect evidence, the final URL, and final
+response headers are retained in SQLite and the report for later crawl-boundary
+decisions. Cross-boundary redirects are not inherently broken.
 Only 404/410 are confirmed broken links; persistent 5xx, 401/403, other unexpected
 4xx, and exhausted transient/network failures retain separate server-error,
 inaccessible, client-error, and inconclusive outcomes in SQLite and the report.
 Attempt counts accompany response/failure evidence.
-Redirect handling arrives in #5; crawl/SEO budgets become relevant when traversal
-lands in later tickets.
+Crawl/SEO budgets become relevant when traversal lands in later tickets.
+Non-HTML GET checks establish response health, not complete download integrity;
+response streams are canceled without downloading the entire body.
 
 Tests call the full-run seam with injected DNS, transport, clock/scheduler, and
 artifact paths, using temporary real SQLite and the real renderer. The test

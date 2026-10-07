@@ -9,15 +9,29 @@ export type DestinationOutcome =
   | "inaccessible"
   | "client-error"
   | "redirect-not-followed"
+  | "redirect-loop"
+  | "redirect-limit"
+  | "redirect-invalid"
   | "inconclusive"
   | "refused"
   | "robots-excluded"
   | "robots-unavailable"
   | "limit-stopped";
+export interface RedirectEvidence {
+  url: string;
+  status: number;
+  location: string;
+  target?: string;
+  attempts: number;
+  responseHeaders: Record<string, string>;
+}
 export interface DestinationResult {
   url: string;
   outcome: DestinationOutcome;
   status?: number;
+  finalUrl?: string;
+  responseHeaders?: Record<string, string>;
+  redirects?: RedirectEvidence[];
   evidence: string;
 }
 export interface AuditRun {
@@ -42,6 +56,10 @@ export function persistRun(path: string, run: AuditRun): void {
         run_id TEXT NOT NULL REFERENCES runs(id), url TEXT NOT NULL, outcome TEXT NOT NULL,
         status INTEGER, evidence TEXT NOT NULL, PRIMARY KEY (run_id, url)
       );
+      CREATE TABLE IF NOT EXISTS destination_responses (
+        run_id TEXT NOT NULL, url TEXT NOT NULL, evidence TEXT NOT NULL,
+        PRIMARY KEY (run_id, url), FOREIGN KEY (run_id, url) REFERENCES destinations(run_id, url)
+      );
       CREATE TABLE IF NOT EXISTS coverage_limitations (
         run_id TEXT NOT NULL REFERENCES runs(id), evidence TEXT NOT NULL
       );`);
@@ -64,6 +82,17 @@ export function persistRun(path: string, run: AuditRun): void {
         destination.outcome,
         destination.status ?? null,
         destination.evidence,
+      );
+      db.query(
+        "INSERT INTO destination_responses VALUES (?, ?, ?) ON CONFLICT(run_id, url) DO UPDATE SET evidence = excluded.evidence",
+      ).run(
+        run.id,
+        destination.url,
+        JSON.stringify({
+          finalUrl: destination.finalUrl,
+          responseHeaders: destination.responseHeaders,
+          redirects: destination.redirects ?? [],
+        }),
       );
       db.query("DELETE FROM coverage_limitations WHERE run_id = ?").run(run.id);
       for (const evidence of run.limitations)
@@ -89,6 +118,8 @@ export function renderReport(run: AuditRun): string {
 <dl><dt>Run</dt><dd>${escape(run.id)}</dd><dt>Execution</dt><dd>${run.executionStatus}</dd><dt>Started</dt><dd>${escape(run.startedAt)}</dd><dt>Finished</dt><dd>${escape(run.finishedAt)}</dd></dl>
 <h2>Summary</h2><p>Destinations retained: 1. Confirmed broken links: ${destination.outcome === "confirmed-broken" ? 1 : 0}. Coverage limitations: ${run.limitations.length}.</p>
 <h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
+${destination.finalUrl === undefined ? "" : `<h2>Final response</h2><p>${escape(destination.finalUrl)}</p><pre>${escape(JSON.stringify(destination.responseHeaders ?? {}, null, 2))}</pre>`}
+${(destination.redirects?.length ?? 0) > 0 ? `<h2>Informational redirects</h2><ul>${destination.redirects!.map((redirect) => `<li>${escape(redirect.url)} — HTTP ${redirect.status} → ${escape(redirect.target ?? "Unresolved target")} (Location: ${escape(redirect.location)}; after ${redirect.attempts} attempts)<pre>${escape(JSON.stringify(redirect.responseHeaders, null, 2))}</pre></li>`).join("")}</ul>` : ""}
 <h2>Coverage limitations</h2><ul>${run.limitations.map((value) => `<li>${escape(value)}</li>`).join("")}</ul>
 <h2>Effective configuration</h2><pre>${escape(JSON.stringify(run.configuration, null, 2))}</pre></html>`;
 }

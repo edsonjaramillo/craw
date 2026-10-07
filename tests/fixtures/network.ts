@@ -17,6 +17,7 @@ export function createNetwork(input: FixtureScenarioInput, clock: AuditClock) {
       const index = scenario.routes.findIndex(
         (route) =>
           route.path === url.pathname + url.search &&
+          (route.method === undefined || route.method === "GET") &&
           (route.hostname === undefined || route.hostname === url.hostname),
       );
       const route = scenario.routes[index];

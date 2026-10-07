@@ -96,6 +96,53 @@ describe("production transport connection contract", () => {
   });
 });
 
+test("production GET cancellation stops a non-HTML stream before complete download", async () => {
+  let cancelled = false;
+  let produced = 0;
+  const server = Bun.serve({
+    hostname: address,
+    port: 0,
+    fetch() {
+      let timer: ReturnType<typeof setInterval>;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(65536));
+          produced++;
+          timer = setInterval(() => {
+            controller.enqueue(new Uint8Array(65536));
+            produced++;
+            if (produced === 100) {
+              clearInterval(timer);
+              controller.close();
+            }
+          }, 20);
+        },
+        cancel() {
+          cancelled = true;
+          clearInterval(timer);
+        },
+      });
+      return new Response(body, { headers: { "content-type": "application/pdf" } });
+    },
+  });
+  try {
+    const response = await productionTransport({
+      url: new URL(`http://${hostname}:${server.port}/document.pdf`),
+      address,
+      identity,
+      signal: AbortSignal.timeout(3000),
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/pdf");
+    await response.body!.cancel();
+    await Bun.sleep(50);
+    expect(cancelled).toBe(true);
+    expect(produced).toBeLessThan(100);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 describe("production TLS verification", () => {
   let directory: string;
   let certificate: string;

@@ -3,14 +3,25 @@ import robotsParser from "robots-parser";
 import { validateAuditConfig } from "./audit-config";
 import { persistRun, renderReport, type AuditRun, type DestinationResult } from "./audit-results";
 import { createGuardedFetch, RunLimitReached } from "./guarded-fetch";
+import { followRedirects, RedirectFailure } from "./guarded-redirects";
 import {
   DestinationRefused,
   productionTransport,
   publicDns,
+  validateDestinationUrl,
   type AuditDns,
   type AuditTransport,
 } from "./guarded-transport";
 import { readRobots } from "./robots-body";
+
+class RobotsAccessDenied extends Error {
+  constructor(
+    public readonly outcome: "robots-excluded" | "robots-unavailable",
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 export interface AuditClock {
   now(): number;
@@ -64,62 +75,96 @@ export async function runAudit(
     url: url.href,
     outcome: "inconclusive",
     evidence: "No response established.",
+    redirects: [],
   };
   const limitations = [
     "Only the starting destination was checked; no link discovery or SEO inspection was performed.",
   ];
   let executionStatus: AuditRun["executionStatus"] = "completed";
-  const robotsUrl = new URL("/robots.txt", url);
   const fetchGuarded = createGuardedFetch(configuration, clock, dns, transport, start);
-  let fetchingRobots = true;
-  try {
-    const { value: robots, attempts: robotsAttempts } = await fetchGuarded(
-      robotsUrl,
-      async (response, signal) => ({
-        status: response.status,
-        ok: response.ok,
-        text: response.ok ? await readRobots(response, signal) : "",
-      }),
-    );
-    let allowed = robots.status === 404 || robots.status === 410;
-    if (robots.ok)
-      allowed =
-        robotsParser(robotsUrl.href, robots.text).isAllowed(
-          url.href,
-          configuration.crawlerIdentity,
-        ) !== false;
-    if (allowed) {
-      fetchingRobots = false;
-      const { value: response, attempts } = await fetchGuarded(url, (incoming) => ({
-        status: incoming.status,
-        ok: incoming.ok,
-        location: incoming.headers.get("location"),
-      }));
-      destination.status = response.status;
-      destination.outcome =
-        response.status === 404 || response.status === 410
-          ? "confirmed-broken"
-          : response.ok
-            ? "successful"
-            : response.status >= 500
-              ? "server-error"
-              : response.status === 401 || response.status === 403
-                ? "inaccessible"
-                : response.status === 408 || response.status === 429
-                  ? "inconclusive"
-                  : response.status >= 300 && response.status < 400
-                    ? "redirect-not-followed"
-                    : "client-error";
-      destination.evidence = `GET returned HTTP ${response.status} after ${attempts} attempts. Response body was not downloaded; download integrity was not checked.`;
-      if (destination.outcome === "redirect-not-followed")
-        destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
-    } else {
-      destination.outcome =
-        robots.status === 401 || robots.status === 403 || robots.ok
-          ? "robots-excluded"
-          : "robots-unavailable";
-      destination.evidence = `Robots rules prevented access (HTTP ${robots.status} after ${robotsAttempts} attempts).`;
+  const policies = new Map<
+    string,
+    { status: number; attempts: number; parser?: ReturnType<typeof robotsParser> }
+  >();
+  async function authorize(target: URL) {
+    validateDestinationUrl(target);
+    const robotsUrl = new URL("/robots.txt", target);
+    let policy = policies.get(target.origin);
+    if (!policy) {
+      try {
+        const { value: robots, attempts } = await followRedirects(
+          robotsUrl,
+          fetchGuarded,
+          configuration.requests.maxRedirectHops,
+          async (response, signal) => ({
+            status: response.status,
+            ok: response.ok,
+            text: response.ok ? await readRobots(response, signal) : "",
+          }),
+          [],
+        );
+        policy = {
+          status: robots.status,
+          attempts,
+          ...(robots.ok ? { parser: robotsParser(robotsUrl.href, robots.text) } : {}),
+        };
+        policies.set(target.origin, policy);
+      } catch (error) {
+        if (error instanceof DestinationRefused || error instanceof RunLimitReached) throw error;
+        throw new RobotsAccessDenied(
+          "robots-unavailable",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
     }
+    if (policy.status === 404 || policy.status === 410) return;
+    if (
+      policy.parser &&
+      policy.parser.isAllowed(target.href, configuration.crawlerIdentity) !== false
+    )
+      return;
+    throw new RobotsAccessDenied(
+      policy.parser || policy.status === 401 || policy.status === 403
+        ? "robots-excluded"
+        : "robots-unavailable",
+      `Robots rules prevented access to ${target.href} (HTTP ${policy.status} after ${policy.attempts} attempts).`,
+    );
+  }
+  try {
+    const { value: response, attempts } = await followRedirects(
+      url,
+      fetchGuarded,
+      configuration.requests.maxRedirectHops,
+      (incoming, _signal, finalUrl) => {
+        destination.finalUrl = finalUrl.href;
+        destination.responseHeaders = Object.fromEntries(incoming.headers);
+        return {
+          status: incoming.status,
+          ok: incoming.ok,
+          location: incoming.headers.get("location"),
+        };
+      },
+      destination.redirects!,
+      authorize,
+    );
+    destination.status = response.status;
+    destination.outcome =
+      response.status === 404 || response.status === 410
+        ? "confirmed-broken"
+        : response.ok
+          ? "successful"
+          : response.status >= 500
+            ? "server-error"
+            : response.status === 401 || response.status === 403
+              ? "inaccessible"
+              : response.status === 408 || response.status === 429
+                ? "inconclusive"
+                : response.status >= 300 && response.status < 400
+                  ? "redirect-not-followed"
+                  : "client-error";
+    destination.evidence = `GET response health evidence: HTTP ${response.status} after ${attempts} attempts at the final destination. Response body was not downloaded; download integrity was not checked.`;
+    if (destination.outcome === "redirect-not-followed")
+      destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
   } catch (error) {
     if (error instanceof RunLimitReached) executionStatus = "limit-stopped";
     destination.outcome =
@@ -127,8 +172,8 @@ export async function runAudit(
         ? "limit-stopped"
         : error instanceof DestinationRefused
           ? "refused"
-          : fetchingRobots
-            ? "robots-unavailable"
+          : error instanceof RobotsAccessDenied || error instanceof RedirectFailure
+            ? error.outcome
             : "inconclusive";
     destination.evidence = error instanceof Error ? error.message : String(error);
   }

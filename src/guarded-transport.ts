@@ -18,10 +18,14 @@ export const publicDns: AuditDns = async (hostname) =>
 
 export class DestinationRefused extends Error {}
 
-export async function validateDestination(url: URL, dns: AuditDns): Promise<string> {
+export function validateDestinationUrl(url: URL): void {
   if (!["http:", "https:"].includes(url.protocol) || url.port || url.username || url.password) {
     throw new DestinationRefused("Only standard-port HTTP(S) without credentials is permitted.");
   }
+}
+
+export async function validateDestination(url: URL, dns: AuditDns): Promise<string> {
+  validateDestinationUrl(url);
   const hostname = url.hostname.replaceAll(/^\[|\]$/gu, "");
   const addresses = ipaddr.isValid(hostname) ? [hostname] : await dns(hostname);
   if (

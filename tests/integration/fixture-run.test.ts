@@ -18,9 +18,9 @@ for (const [status, outcome] of [
   [422, "client-error"],
   [429, "inconclusive"],
   [408, "inconclusive"],
-  [302, "redirect-not-followed"],
+  [302, "refused"],
 ] as const) {
-  test(`real fixture GET ${status} retains ${outcome} without fetching redirect targets or discovering links`, async () => {
+  test(`real fixture GET ${status} retains ${outcome} without dispatching unsafe targets or discovering links`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "craw-fixture-"));
     const fixture = startFixture({
       name: "status",
@@ -63,7 +63,7 @@ for (const [status, outcome] of [
       try {
         expect(db.query("SELECT outcome, status FROM destinations").get()).toEqual({
           outcome,
-          status,
+          status: status === 302 ? null : status,
         });
       } finally {
         db.close();
