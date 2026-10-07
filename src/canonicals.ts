@@ -9,6 +9,10 @@ export interface CanonicalDeclaration {
   evidence: string;
 }
 
+export function distinctCanonicalTargets(declarations: CanonicalDeclaration[]): string[] {
+  return [...new Set(declarations.flatMap((declaration) => declaration.destinationUrl ?? []))];
+}
+
 /** Keep every declaration, including unsupported or unresolved references. */
 export function canonicalDeclarations(html: CheerioAPI, sourceUrl: string): CanonicalDeclaration[] {
   const base = htmlBase(html, sourceUrl);

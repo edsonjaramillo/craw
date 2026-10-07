@@ -52,8 +52,22 @@ test("resolves canonical evidence with base URLs and fragments without expanding
         ),
       ],
     },
-    { path: "/blog/target?b=2&a=1", responses: [html('<a href="/blog/never">never</a>')] },
-    { path: "/blog/missing", responses: [html("<h1>Missing</h1>")] },
+    {
+      path: "/blog/target?b=2&a=1",
+      responses: [
+        html(
+          '<title>Shared title</title><meta name="description" content="Shared description"><h1>Canonical-only heading one</h1><h1>Canonical-only heading two</h1><a href="/blog/never">never</a>',
+        ),
+      ],
+    },
+    {
+      path: "/blog/missing",
+      responses: [
+        html(
+          '<title>Shared title</title><meta name="description" content="Shared description"><h1>Missing</h1>',
+        ),
+      ],
+    },
   ]);
   expect(result.run.pages.map((page) => page.url)).toEqual([
     "https://site.example/blog",
@@ -89,6 +103,36 @@ test("resolves canonical evidence with base URLs and fragments without expanding
   } finally {
     db.close();
   }
+  const artifacts = new Database(result.databasePath, { readonly: true });
+  try {
+    expect(artifacts.query("SELECT url FROM pages ORDER BY rowid").all()).toEqual([
+      { url: "https://site.example/blog" },
+      { url: "https://site.example/blog/missing" },
+    ]);
+    expect(artifacts.query("SELECT source_url, destination_url FROM source_links").all()).toEqual([
+      {
+        source_url: "https://site.example/blog",
+        destination_url: "https://site.example/blog/missing",
+      },
+    ]);
+    expect(
+      artifacts
+        .query(
+          "SELECT count(*) AS count FROM seo_observations WHERE url = 'https://site.example/blog/target?b=2&a=1'",
+        )
+        .get(),
+    ).toEqual({ count: 0 });
+    expect(artifacts.query("SELECT count(*) AS count FROM duplicate_metadata").get()).toEqual({
+      count: 0,
+    });
+  } finally {
+    artifacts.close();
+  }
+  expect(result.report).not.toContain("Canonical-only heading");
+  expect(result.report).not.toContain("/blog/never");
+  expect(result.report).not.toContain("duplicate-title — within this run");
+  expect(result.report).not.toContain("duplicate-description — within this run");
+  expect(result.report).toContain("Pages eligible for SEO: 2");
   expect(result.report).toContain("../target?b=2&amp;a=1#first");
   expect(result.report).toContain("Canonical declarations");
 });

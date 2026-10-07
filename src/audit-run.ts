@@ -2,7 +2,7 @@ import robotsParser from "robots-parser";
 
 import { validateAuditConfig } from "./audit-config";
 import { persistRun, renderReport, type AuditRun, type DestinationResult } from "./audit-results";
-import { canonicalDeclarations } from "./canonicals";
+import { canonicalDeclarations, distinctCanonicalTargets } from "./canonicals";
 import { createGuardedFetch, RunLimitReached } from "./guarded-fetch";
 import { followRedirects, RedirectFailure } from "./guarded-redirects";
 import {
@@ -76,13 +76,16 @@ export async function runAudit(
   const start = clock.now();
   const url = new URL(configuration.startUrl);
   url.hash = "";
-  const startingDestination: DestinationResult = {
-    url: url.href,
-    crawlIdentity: crawlIdentity(url.href, configuration),
-    outcome: "inconclusive",
-    evidence: "No response established.",
-    redirects: [],
-  };
+  function newDestination(target: string): DestinationResult {
+    return {
+      url: target,
+      crawlIdentity: crawlIdentity(target, configuration),
+      outcome: "inconclusive",
+      evidence: "No response established.",
+      redirects: [],
+    };
+  }
+  const startingDestination = newDestination(url.href);
   const destinations: DestinationResult[] = [];
   const pages: AuditRun["pages"] = [];
   const links: AuditRun["links"] = [];
@@ -260,7 +263,7 @@ export async function runAudit(
           severity: "info",
           evidence: "No canonical declaration found.",
         });
-      if (new Set(declarations.flatMap((declaration) => declaration.destinationUrl ?? [])).size > 1)
+      if (distinctCanonicalTargets(declarations).length > 1)
         observations.push({
           url: pageUrl,
           kind: "conflicting-canonicals",
@@ -276,15 +279,7 @@ export async function runAudit(
   try {
     await traverse(url.href, async (target, depth, enqueue) => {
       await visit(
-        target === startingDestination.url
-          ? startingDestination
-          : {
-              url: target,
-              crawlIdentity: crawlIdentity(target, configuration),
-              outcome: "inconclusive",
-              evidence: "No response established.",
-              redirects: [],
-            },
+        target === startingDestination.url ? startingDestination : newDestination(target),
         depth,
         enqueue,
       );
@@ -298,13 +293,7 @@ export async function runAudit(
       const target = declaration.destinationUrl;
       if (target === undefined || !["http:", "https:"].includes(new URL(target).protocol)) continue;
       if (!checkedTargets.has(target)) {
-        const destination: DestinationResult = {
-          url: target,
-          crawlIdentity: crawlIdentity(target, configuration),
-          outcome: "inconclusive",
-          evidence: "No response established.",
-          redirects: [],
-        };
+        const destination = newDestination(target);
         checkedTargets.set(target, destination);
         await visit(destination, 0, () => Promise.resolve(), false);
       }
@@ -313,9 +302,7 @@ export async function runAudit(
       canonicals,
       (declaration) => declaration.sourceUrl,
     )) {
-      const broken = [
-        ...new Set(declarations.flatMap((declaration) => declaration.destinationUrl ?? [])),
-      ]
+      const broken = distinctCanonicalTargets(declarations)
         .map((target) => checkedTargets.get(target))
         .filter((destination) => destination?.outcome === "confirmed-broken");
       if (broken.length > 0)
