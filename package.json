@@ -1,0 +1,29 @@
+{
+  "name": "craw",
+  "type": "module",
+  "module": "src/index.ts",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "format": "oxfmt .",
+    "lint": "oxlint --type-aware --type-check .",
+    "lint:fix": "oxlint --type-aware --type-check --fix ."
+  },
+  "dependencies": {
+    "@crawlee/cheerio": "^3.18.2",
+    "cheerio": "^1.2.0",
+    "drizzle-orm": "1.0.0-rc.4",
+    "fast-xml-parser": "^5.11.2",
+    "robots-parser": "^3.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^26.6.4",
+    "drizzle-kit": "1.0.0-rc.4",
+    "oxfmt": "^0.72.0",
+    "oxlint": "^1.87.0",
+    "oxlint-tsgolint": "^7.0.2003",
+    "typescript": "^7.0.2"
+  }
+}
