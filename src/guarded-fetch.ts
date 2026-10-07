@@ -1,10 +1,69 @@
 import type { AuditConfig } from "./audit-config";
 import type { AuditClock } from "./audit-run";
-import { validateDestination, type AuditDns, type AuditTransport } from "./guarded-transport";
+import {
+  DestinationRefused,
+  validateDestination,
+  type AuditDns,
+  type AuditTransport,
+} from "./guarded-transport";
+import { InvalidRobotsRules } from "./robots-body";
 
 export class RunLimitReached extends Error {}
 
-/** Sequential requests satisfy the global concurrency cap; all starts are hostname-paced. */
+/** A cancellation-aware permit pool. Waiting never counts as a network request. */
+function permits(capacity: number) {
+  let active = 0;
+  const waiting = new Set<() => void>();
+  return (signal: AbortSignal): Promise<() => void> =>
+    new Promise((resolve, reject) => {
+      const cancel = () => {
+        waiting.delete(enter);
+        signal.removeEventListener("abort", cancel);
+        reject(new Error("Scheduling aborted", { cause: signal.reason }));
+      };
+      const enter = () => {
+        if (signal.aborted) {
+          cancel();
+          return;
+        }
+        if (active >= capacity) {
+          waiting.add(enter);
+          return;
+        }
+        waiting.delete(enter);
+        signal.removeEventListener("abort", cancel);
+        active++;
+        let released = false;
+        resolve(() => {
+          if (released) return;
+          released = true;
+          active--;
+          for (const next of waiting) {
+            next();
+            if (active >= capacity) break;
+          }
+        });
+      };
+      signal.addEventListener("abort", cancel, { once: true });
+      enter();
+    });
+}
+
+function retryAfterDelay(response: Response, now: number): number {
+  const value = response.headers.get("retry-after")?.trim();
+  if (value === undefined) return 0;
+  // Date.parse also accepts non-HTTP dates (e.g. "-9999"); those must not become cooldowns.
+  const httpDate =
+    /^(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT|(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT|(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4})$/u;
+  const milliseconds = /^\d+$/u.test(value)
+    ? Number(value) * 1000
+    : httpDate.test(value)
+      ? Date.parse(value) - now
+      : 0;
+  return Number.isNaN(milliseconds) ? 0 : Math.max(0, milliseconds);
+}
+
+/** Shared by robots, retries and future redirect hops; no dispatch can bypass pressure controls. */
 export function createGuardedFetch(
   configuration: AuditConfig,
   clock: AuditClock,
@@ -12,7 +71,15 @@ export function createGuardedFetch(
   transport: AuditTransport,
   startedAt: number,
 ) {
-  let previousStart: number | undefined;
+  const globalPermit = permits(configuration.requests.concurrency);
+  const hosts = new Map<
+    string,
+    {
+      acquire: ReturnType<typeof permits>;
+      previousStart?: number;
+      notBefore: number;
+    }
+  >();
   const deadline = startedAt + configuration.limits.maxDurationMs;
   function remaining(): number {
     const milliseconds = deadline - clock.now();
@@ -27,10 +94,9 @@ export function createGuardedFetch(
     const controller = new AbortController();
     const timerController = new AbortController();
     const timeout = clock.sleep(budget, timerController.signal).then(() => {
-      const error = durationLimited
+      throw durationLimited
         ? new RunLimitReached("Run-duration limit reached.")
         : new Error("Request timeout; response health is inconclusive.");
-      throw error;
     });
     try {
       return await Promise.race([operation(controller.signal), timeout]);
@@ -39,62 +105,106 @@ export function createGuardedFetch(
       controller.abort();
     }
   }
+  async function wait(milliseconds: number) {
+    if (milliseconds > 0) {
+      const budget = remaining();
+      await bounded(budget, true, (signal) => clock.sleep(Math.min(milliseconds, budget), signal));
+    }
+    remaining();
+  }
+  async function attempt<T>(
+    url: URL,
+    consume: (response: Response, signal: AbortSignal) => T | Promise<T>,
+  ) {
+    let host = hosts.get(url.hostname);
+    if (!host) {
+      host = { acquire: permits(1), notBefore: 0 };
+      hosts.set(url.hostname, host);
+    }
+    // Serialize each hostname through consumption; other hostnames can use the global slots.
+    const releaseHost = await bounded(remaining(), true, host.acquire);
+    let dispatched = false;
+    try {
+      await wait(
+        Math.max(
+          host.notBefore,
+          (host.previousStart ?? -Infinity) + configuration.requests.hostnameIntervalMs,
+        ) - clock.now(),
+      );
+      const releaseGlobal = await bounded(remaining(), true, globalPermit);
+      try {
+        const available = remaining();
+        return await bounded(
+          Math.min(available, configuration.requests.timeoutMs),
+          available <= configuration.requests.timeoutMs,
+          async (signal) => {
+            try {
+              const address = await validateDestination(url, dns);
+              signal.throwIfAborted();
+              host.previousStart = clock.now();
+              dispatched = true;
+              const response = await transport({
+                url,
+                address,
+                identity: configuration.crawlerIdentity,
+                signal,
+              });
+              try {
+                signal.throwIfAborted();
+                // Cool down the hostname, not just this caller, including after exhausted retries.
+                host.notBefore = Math.max(
+                  host.notBefore,
+                  clock.now() + retryAfterDelay(response, clock.now()),
+                );
+                return await consume(response, signal);
+              } finally {
+                await response.body?.cancel().catch(() => {});
+              }
+            } finally {
+              // Timeout aborts promptly, but capacity belongs to the actual work until cleanup settles.
+              releaseGlobal();
+              releaseHost();
+            }
+          },
+        );
+      } finally {
+        // A stalled DNS lookup cannot dispatch after abort, so it need not retain capacity.
+        if (!dispatched) releaseGlobal();
+      }
+    } finally {
+      if (!dispatched) releaseHost();
+    }
+  }
   return async function fetchGuarded<T>(
     url: URL,
-    consume: (response: Response) => T | Promise<T>,
-  ): Promise<T> {
-    const wait =
-      previousStart === undefined
-        ? 0
-        : previousStart + configuration.requests.hostnameIntervalMs - clock.now();
-    if (wait > 0) await bounded(remaining(), true, (signal) => clock.sleep(wait, signal));
-    const available = remaining();
-    return bounded(
-      Math.min(available, configuration.requests.timeoutMs),
-      available <= configuration.requests.timeoutMs,
-      async (signal) => {
-        const address = await validateDestination(url, dns);
-        signal.throwIfAborted();
-        previousStart = clock.now();
-        const response = await transport({
-          url,
-          address,
-          identity: configuration.crawlerIdentity,
-          signal,
+    consume: (response: Response, signal: AbortSignal) => T | Promise<T>,
+  ): Promise<{ value: T; attempts: number }> {
+    for (let retries = 0; ; retries++) {
+      let delay = Math.min(30_000, 1_000 * 2 ** Math.min(retries, 5));
+      try {
+        const result = await attempt(url, async (response, signal) => {
+          const transient =
+            response.status === 408 || response.status === 429 || response.status >= 500;
+          if (transient && retries < configuration.requests.retries) {
+            delay = Math.max(delay, retryAfterDelay(response, clock.now()));
+            return { retry: true as const };
+          }
+          return { retry: false as const, value: await consume(response, signal) };
         });
-        try {
-          signal.throwIfAborted();
-          return await consume(response);
-        } finally {
-          // Consumers release readers before returning, so cancellation closes even late responses.
-          await response.body?.cancel().catch(() => {});
+        if (!result.retry) return { value: result.value, attempts: retries + 1 };
+      } catch (error) {
+        if (
+          error instanceof RunLimitReached ||
+          error instanceof DestinationRefused ||
+          error instanceof InvalidRobotsRules
+        )
+          throw error;
+        if (retries >= configuration.requests.retries) {
+          const evidence = error instanceof Error ? error.message : String(error);
+          throw new Error(`${evidence} after ${retries + 1} attempts.`, { cause: error });
         }
-      },
-    );
-  };
-}
-
-/** Robots bodies are capped to keep both memory and coverage decisions bounded. */
-export async function readRobots(response: Response): Promise<string> {
-  const encoding = response.headers.get("content-encoding")?.trim().toLowerCase();
-  if (encoding !== undefined && encoding !== "identity") {
-    throw new Error(`Robots rules use an unsupported content encoding: ${encoding}.`);
-  }
-  if (!response.body) return "";
-  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  let bytes = 0;
-  try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) return text + decoder.decode();
-      bytes += chunk.value.byteLength;
-      if (bytes > 512 * 1024) throw new Error("Robots rules exceeded the 512 KiB safety bound.");
-      text += decoder.decode(chunk.value, { stream: true });
+      }
+      await wait(delay);
     }
-  } finally {
-    await reader.cancel().catch(() => {});
-    reader.releaseLock();
-  }
+  };
 }

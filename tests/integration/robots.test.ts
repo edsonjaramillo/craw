@@ -25,7 +25,7 @@ for (const [status, body, expected, dispatched] of [
         {
           startUrl: "https://public.example/",
           crawlerIdentity: "MyAudit/1.0",
-          requests: { hostnameIntervalMs: 1 },
+          requests: { hostnameIntervalMs: 1, retries: 0 },
         },
         {
           databasePath: join(directory, "audit.sqlite"),
@@ -91,7 +91,7 @@ test("unavailable network rules fail closed and oversized rules never permit acc
     for (const failure of ["network", "oversized"]) {
       const attempted: string[] = [];
       const result = await runAudit(
-        { startUrl: "http://public.example/" },
+        { startUrl: "http://public.example/", requests: { retries: 0 } },
         {
           databasePath: join(directory, "audit.sqlite"),
           reportPath: join(directory, "report.html"),

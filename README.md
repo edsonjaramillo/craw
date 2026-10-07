@@ -3,7 +3,7 @@
 A Bun website auditor, under development. The current flow audits only the
 starting destination, with public-only, address-pinned HTTP(S), robots rules,
 retained SQLite runs, and a standalone HTML report. It does not yet discover
-links, inspect SEO, follow redirects, or retry transient failures.
+links, inspect SEO, or follow redirects.
 
 ## Configuration and execution
 
@@ -72,8 +72,14 @@ Refused, robots-excluded, unavailable, and inconclusive destinations are never
 reported as healthy. Fatal execution/storage errors exit nonzero, while
 attempting to preserve a failed run and partial report independently.
 
-Requests use GET, run sequentially (below the configured concurrency cap),
-pace request starts, and enforce request/run deadlines. Robots bodies have a
+Requests use GET through a shared scheduler with a global concurrency cap and
+per-hostname request-start spacing. Each hostname is also serialized through body
+consumption; different hostnames can use separate global slots. The current
+single-destination run is sequential. Scheduling, retry waits, DNS, requests, and
+body reads are bounded by the run deadline; each network attempt also has a
+request timeout. Aborted attempts retain their slots until transport/body cleanup
+settles, so a retry cannot overlap unfinished cancellation; queued retries still
+stop at the run deadline. Robots bodies have a
 512 KiB safety cap. Production requests ask for identity encoding; undecoded
 compressed robots rules are treated as unavailable rather than interpreted as
 empty rules. Destination response bodies are canceled after status is
@@ -81,8 +87,17 @@ established; no full-download integrity or SEO claim is made. Robots 404/410
 allows access, 401/403 excludes all, and unavailable rules fail closed. Neither
 robots nor destination redirects are followed. Crawlee is not dispatched in
 this single-destination stage, so its internals cannot issue unguarded requests.
-Retry/backoff and expanded scheduling arrive in #4, redirect handling in #5,
-and crawl/SEO budgets become relevant when traversal lands in later tickets.
+HTTP 408/429/5xx and network failures receive at most the configured number of
+retries (two by default). Backoff starts at one second, doubles, and caps at thirty
+seconds; a valid Retry-After delay or HTTP date can extend the wait. Exhausted
+robots retrieval skips the destination and records unavailable coverage. Invalid
+or oversized robots bodies and public-policy refusals are not retried.
+Only 404/410 are confirmed broken links; persistent 5xx, 401/403, other unexpected
+4xx, and exhausted transient/network failures retain separate server-error,
+inaccessible, client-error, and inconclusive outcomes in SQLite and the report.
+Attempt counts accompany response/failure evidence.
+Redirect handling arrives in #5; crawl/SEO budgets become relevant when traversal
+lands in later tickets.
 
 Tests call the full-run seam with injected DNS, transport, clock/scheduler, and
 artifact paths, using temporary real SQLite and the real renderer. The test

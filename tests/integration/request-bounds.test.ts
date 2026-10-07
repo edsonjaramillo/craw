@@ -3,45 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { runAudit, type AuditClock } from "../../src/audit-run";
-
-class ManualClock implements AuditClock {
-  time = Date.UTC(2026, 0, 1);
-  timers = new Set<{ due: number; finish(): void }>();
-  now() {
-    return this.time;
-  }
-  sleep(ms: number, signal: AbortSignal): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const cancel = () => {
-        this.timers.delete(timer);
-        reject(new Error("Sleep aborted", { cause: signal.reason }));
-      };
-      const timer = {
-        due: this.time + ms,
-        finish: () => {
-          signal.removeEventListener("abort", cancel);
-          this.timers.delete(timer);
-          resolve();
-        },
-      };
-      if (signal.aborted) {
-        reject(new Error("Sleep aborted", { cause: signal.reason }));
-        return;
-      }
-      this.timers.add(timer);
-      signal.addEventListener("abort", cancel, { once: true });
-    });
-  }
-  advance(ms: number) {
-    this.time += ms;
-    for (const timer of this.timers) if (timer.due <= this.time) timer.finish();
-  }
-}
-const flush = () =>
-  new Promise<void>((resolve) => {
-    setImmediate(resolve);
-  });
+import { runAudit } from "../../src/audit-run";
+import { ManualClock, flush } from "../fixtures/clock";
 
 test("run duration bounds pacing and in-flight work and retains a partial report", async () => {
   for (const stalled of [false, true]) {
@@ -124,7 +87,10 @@ test("destination timeout cancels in-flight work and retains an inconclusive out
     const clock = new ManualClock();
     let signal: AbortSignal | undefined;
     const result = runAudit(
-      { startUrl: "https://public.example/", requests: { hostnameIntervalMs: 1, timeoutMs: 50 } },
+      {
+        startUrl: "https://public.example/",
+        requests: { hostnameIntervalMs: 1, timeoutMs: 50, retries: 0 },
+      },
       {
         ...paths,
         clock,
@@ -159,7 +125,7 @@ test("times out stalled robots fail-closed, including DNS, without destination d
     const clock = new ManualClock();
     let attempts = 0;
     const result = runAudit(
-      { startUrl: "https://public.example/", requests: { timeoutMs: 50 } },
+      { startUrl: "https://public.example/", requests: { timeoutMs: 50, retries: 0 } },
       {
         ...paths,
         clock,

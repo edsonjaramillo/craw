@@ -43,7 +43,8 @@ for (const [status, outcome] of [
     });
     try {
       const result = await runAudit(
-        { startUrl: "https://public.example/", requests: { hostnameIntervalMs: 1 } },
+        // Retry behavior is covered by the deterministic scheduler scenarios.
+        { startUrl: "https://public.example/", requests: { hostnameIntervalMs: 1, retries: 0 } },
         {
           databasePath: join(directory, "audit.sqlite"),
           reportPath: join(directory, "report.html"),

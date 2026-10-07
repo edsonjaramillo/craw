@@ -2,7 +2,7 @@ import robotsParser from "robots-parser";
 
 import { validateAuditConfig } from "./audit-config";
 import { persistRun, renderReport, type AuditRun, type DestinationResult } from "./audit-results";
-import { createGuardedFetch, readRobots, RunLimitReached } from "./guarded-fetch";
+import { createGuardedFetch, RunLimitReached } from "./guarded-fetch";
 import {
   DestinationRefused,
   productionTransport,
@@ -10,6 +10,7 @@ import {
   type AuditDns,
   type AuditTransport,
 } from "./guarded-transport";
+import { readRobots } from "./robots-body";
 
 export interface AuditClock {
   now(): number;
@@ -72,11 +73,14 @@ export async function runAudit(
   const fetchGuarded = createGuardedFetch(configuration, clock, dns, transport, start);
   let fetchingRobots = true;
   try {
-    const robots = await fetchGuarded(robotsUrl, async (response) => ({
-      status: response.status,
-      ok: response.ok,
-      text: response.ok ? await readRobots(response) : "",
-    }));
+    const { value: robots, attempts: robotsAttempts } = await fetchGuarded(
+      robotsUrl,
+      async (response, signal) => ({
+        status: response.status,
+        ok: response.ok,
+        text: response.ok ? await readRobots(response, signal) : "",
+      }),
+    );
     let allowed = robots.status === 404 || robots.status === 410;
     if (robots.ok)
       allowed =
@@ -86,7 +90,7 @@ export async function runAudit(
         ) !== false;
     if (allowed) {
       fetchingRobots = false;
-      const response = await fetchGuarded(url, (incoming) => ({
+      const { value: response, attempts } = await fetchGuarded(url, (incoming) => ({
         status: incoming.status,
         ok: incoming.ok,
         location: incoming.headers.get("location"),
@@ -106,7 +110,7 @@ export async function runAudit(
                   : response.status >= 300 && response.status < 400
                     ? "redirect-not-followed"
                     : "client-error";
-      destination.evidence = `GET returned HTTP ${response.status}. Response body was not downloaded; download integrity was not checked.`;
+      destination.evidence = `GET returned HTTP ${response.status} after ${attempts} attempts. Response body was not downloaded; download integrity was not checked.`;
       if (destination.outcome === "redirect-not-followed")
         destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
     } else {
@@ -114,7 +118,7 @@ export async function runAudit(
         robots.status === 401 || robots.status === 403 || robots.ok
           ? "robots-excluded"
           : "robots-unavailable";
-      destination.evidence = `Robots rules prevented access (HTTP ${robots.status}).`;
+      destination.evidence = `Robots rules prevented access (HTTP ${robots.status} after ${robotsAttempts} attempts).`;
     }
   } catch (error) {
     if (error instanceof RunLimitReached) executionStatus = "limit-stopped";
