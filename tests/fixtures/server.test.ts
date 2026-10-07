@@ -99,6 +99,38 @@ test("exact query order and logical hostname select routes", async () => {
   }
 });
 
+test("scheme-specific sequences and configured identities remain observable after reset", async () => {
+  const fixture = startFixture({
+    name: "schemes",
+    routes: [
+      { scheme: "http", path: "/", responses: [{ status: 410 }] },
+      { scheme: "https", path: "/", responses: [{ status: 503 }, { status: 200 }] },
+    ],
+  });
+  try {
+    const request = (scheme: string) =>
+      fixture.transport({
+        url: new URL(`${scheme}://public.example/`),
+        address: "93.184.216.34",
+        identity: "AcceptanceBot/1.0",
+        signal: new AbortController().signal,
+      });
+    expect((await request("http")).status).toBe(410);
+    expect((await request("https")).status).toBe(503);
+    expect((await request("https")).status).toBe(200);
+    expect(fixture.requests.map(({ url, identity }) => [url, identity])).toEqual([
+      ["http://public.example/", "AcceptanceBot/1.0"],
+      ["https://public.example/", "AcceptanceBot/1.0"],
+      ["https://public.example/", "AcceptanceBot/1.0"],
+    ]);
+    fixture.reset();
+    expect((await request("https")).status).toBe(503);
+    expect(fixture.requests).toHaveLength(1);
+  } finally {
+    await fixture.stop();
+  }
+});
+
 test("stream consumption completes; cancellation stops production", async () => {
   const fixture = startFixture({
     name: "stream",
@@ -118,6 +150,26 @@ test("stream consumption completes; cancellation stops production", async () => 
     await until(() => fixture.requests[1]?.bodyState === "cancelled");
     expect(fixture.requests[1]?.bytesProduced).toBeLessThan(65536 * 100);
     expect(fixture.requests[1]?.bodyCancelledAt).toBeGreaterThan(0);
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("reset cannot discard a pending stream's log or response state", async () => {
+  const fixture = startFixture({
+    name: "pending reset",
+    routes: [{ path: "/", responses: [{ stream: { chunk: "x", chunks: 100, intervalMs: 20 } }] }],
+  });
+  try {
+    const response = await get(fixture);
+    expect(() => {
+      fixture.reset();
+    }).toThrow("Cannot reset an active fixture");
+    expect(fixture.requests).toHaveLength(1);
+    await response.body?.cancel();
+    await until(() => fixture.requests[0]?.bodyState === "cancelled");
+    fixture.reset();
+    expect(fixture.requests).toEqual([]);
   } finally {
     await fixture.stop();
   }

@@ -1,8 +1,9 @@
+import { adversarialScenario } from "./scenarios/adversarial";
 import { startFixture } from "./server";
 
 // Manual inspection only: bun run tests/fixtures/run.ts
 if (import.meta.main) {
-  const fixture = startFixture(undefined, { port: 3000 });
+  const fixture = startFixture(adversarialScenario, { port: 3000 });
   console.log(`Fixture listening at ${fixture.url.href}`);
   const shutdown = async () => {
     await fixture.stop();

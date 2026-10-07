@@ -169,3 +169,7 @@ bypass. No live public website is required. Contract TLS fixtures require
 
 For manual fixture inspection: `bun run fixtures`. Automated tests start and
 stop isolated fixtures directly; importing fixture modules never opens a server.
+The manual script serves the combined adversarial acceptance graph. See
+[repeatable acceptance scenarios](docs/acceptance.md) for coverage, commands,
+logical-host inspection and the distinction between local mappings and production
+connection/TLS contracts.

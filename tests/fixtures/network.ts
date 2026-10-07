@@ -6,11 +6,30 @@ import { scenarioSchema, type FixtureScenarioInput } from "./scenarios";
 export function createNetwork(input: FixtureScenarioInput, clock: AuditClock) {
   const scenario = scenarioSchema.parse(input);
   const cursors = new Map<number, number>();
-  const requests: { url: string; time: number; signal: AbortSignal }[] = [];
+  const requests: {
+    url: string;
+    hostname: string;
+    method: "GET";
+    identity: string;
+    address: string;
+    time: number;
+    signal: AbortSignal;
+    bodyState: "pending" | "completed" | "cancelled";
+  }[] = [];
   let active = 0;
   let peak = 0;
-  const transport: AuditTransport = async ({ url, signal }) => {
-    requests.push({ url: url.href, time: clock.now(), signal });
+  const transport: AuditTransport = async ({ url, signal, identity, address }) => {
+    const request: (typeof requests)[number] = {
+      url: url.href,
+      hostname: url.hostname,
+      method: "GET",
+      identity,
+      address,
+      time: clock.now(),
+      signal,
+      bodyState: "pending",
+    };
+    requests.push(request);
     active++;
     peak = Math.max(peak, active);
     try {
@@ -18,6 +37,7 @@ export function createNetwork(input: FixtureScenarioInput, clock: AuditClock) {
         (route) =>
           route.path === url.pathname + url.search &&
           (route.method === undefined || route.method === "GET") &&
+          (route.scheme === undefined || `${route.scheme}:` === url.protocol) &&
           (route.hostname === undefined || route.hostname === url.hostname),
       );
       const route = scenario.routes[index];
@@ -26,10 +46,15 @@ export function createNetwork(input: FixtureScenarioInput, clock: AuditClock) {
       cursors.set(index, cursor + 1);
       const response = route.responses[Math.min(cursor, route.responses.length - 1)]!;
       if (response.delayMs) await clock.sleep(response.delayMs, signal);
+      if (response.stream) throw new Error("Use the real fixture server for body-stream scenarios");
+      request.bodyState = "completed";
       return new Response(response.body || null, {
         status: response.status,
         headers: response.headers,
       });
+    } catch (error) {
+      request.bodyState = "cancelled";
+      throw error;
     } finally {
       active--;
     }

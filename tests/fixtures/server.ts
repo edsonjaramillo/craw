@@ -8,6 +8,7 @@ export interface FixtureRequest {
   method: string;
   url: string;
   hostname: string;
+  identity: string;
   arrivedAt: number;
   bodyState: "pending" | "completed" | "cancelled";
   bodyCompletedAt?: number;
@@ -37,7 +38,11 @@ export interface Fixture {
 /** No listeners are created until this function is called. Port 0 isolates tests. */
 export function startFixture(
   input: FixtureScenarioInput = healthyScenario,
-  options: { port?: number } = {},
+  options: {
+    port?: number;
+    hostname?: "127.0.0.1" | "127.0.0.2";
+    tls?: { key: Buffer; cert: Buffer };
+  } = {},
 ): Fixture {
   const scenario = scenarioSchema.parse(input);
   const requests: FixtureRequest[] = [];
@@ -53,6 +58,7 @@ export function startFixture(
       method: request.method,
       url: logicalUrl.href,
       hostname: logicalUrl.hostname,
+      identity: request.headers.get("user-agent") ?? "",
       arrivedAt: Date.now(),
       bodyState: "pending",
       bytesProduced: 0,
@@ -67,6 +73,7 @@ export function startFixture(
     const routeIndex = scenario.routes.findIndex(
       (route) =>
         (route.hostname === undefined || route.hostname === logicalUrl.hostname) &&
+        (route.scheme === undefined || `${route.scheme}:` === logicalUrl.protocol) &&
         (route.method === undefined || route.method === request.method) &&
         route.path === logicalUrl.pathname + logicalUrl.search,
     );
@@ -165,7 +172,12 @@ export function startFixture(
     return new Response(body, { status: response.status, headers: response.headers });
   });
 
-  const server = Bun.serve({ hostname: "127.0.0.1", port: options.port ?? 0, fetch: app.fetch });
+  const server = Bun.serve({
+    hostname: options.hostname ?? "127.0.0.1",
+    port: options.port ?? 0,
+    ...(options.tls ? { tls: options.tls } : {}),
+    fetch: app.fetch,
+  });
   const url = new URL(server.url);
   const transport: FixtureTransport = ({ url: logicalUrl, identity, signal }) => {
     if (stopped) return Promise.reject(new Error("Fixture is stopped"));
@@ -188,6 +200,7 @@ export function startFixture(
     requests,
     transport,
     reset() {
+      if (cleanups.size > 0) throw new Error("Cannot reset an active fixture");
       cursors.clear();
       requests.length = 0;
     },
