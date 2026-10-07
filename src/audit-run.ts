@@ -75,6 +75,7 @@ export async function runAudit(
   url.hash = "";
   const startingDestination: DestinationResult = {
     url: url.href,
+    crawlIdentity: crawlIdentity(url.href, configuration),
     outcome: "inconclusive",
     evidence: "No response established.",
     redirects: [],
@@ -251,6 +252,7 @@ export async function runAudit(
           ? startingDestination
           : {
               url: target,
+              crawlIdentity: crawlIdentity(target, configuration),
               outcome: "inconclusive",
               evidence: "No response established.",
               redirects: [],

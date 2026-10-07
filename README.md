@@ -1,9 +1,9 @@
 # Craw
 
-A Bun website auditor, under development. The current flow audits only the
-starting destination, with public-only, address-pinned HTTP(S), robots rules,
-retained SQLite runs, and a standalone HTML report. It does not yet discover
-links or inspect SEO. Public, robots-permitted redirects are followed for response health.
+A Bun website auditor, under development. The current flow discovers navigation
+links within the crawl boundary, with public-only, address-pinned HTTP(S), robots
+rules, retained SQLite runs, and a standalone HTML report. It does not yet inspect
+SEO. Public, robots-permitted redirects are followed for response health.
 
 ## Configuration and execution
 
@@ -115,7 +115,14 @@ and segment-aware path boundaries admit both standard-port HTTP and HTTPS as
 distinct identities. External/out-of-path destinations and cross-boundary final
 redirects are checked without expansion or SEO eligibility. Tracking exclusions
 apply only to expansion identity; original destinations receive independent checks.
-SQLite and reports retain every source relationship and discovered href.
+Exclusions default to an empty list. Configured names match decoded query keys
+case-sensitively; all remaining query ordering and encoding is preserved. No
+tracking-normalized URL is fetched in place of an original destination. Successful
+expansion is deduplicated by the final response's crawl identity, while health
+checks and destination budgets remain keyed by fragment-free originals.
+SQLite response evidence and reports retain each original's crawl identity,
+including failed or budget-excluded variants, alongside every source relationship
+and discovered href.
 Page, HTML-link depth (start is zero), and checked-destination budgets are
 independent. Page/depth exclusions prevent expansion, not destination health
 checks; check-only destinations do not consume page/depth budgets. Excluded work

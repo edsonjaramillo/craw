@@ -27,6 +27,8 @@ export interface RedirectEvidence {
 }
 export interface DestinationResult {
   url: string;
+  /** Original destination's identity; response health always belongs to url, not this key. */
+  crawlIdentity: string;
   outcome: DestinationOutcome;
   status?: number;
   finalUrl?: string;
@@ -100,6 +102,7 @@ export function persistRun(path: string, run: AuditRun): void {
           run.id,
           destination.url,
           JSON.stringify({
+            crawlIdentity: destination.crawlIdentity,
             finalUrl: destination.finalUrl,
             responseHeaders: destination.responseHeaders,
             redirects: destination.redirects ?? [],
@@ -143,7 +146,7 @@ export function renderReport(run: AuditRun): string {
   const results = run.destinations
     .map((destination) => {
       const sources = run.links.filter((link) => link.destinationUrl === destination.url);
-      return `<section><h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
+      return `<section><h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Crawl identity</dt><dd>${escape(destination.crawlIdentity)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
 <h3>Source pages and discovered URL evidence</h3><ul>${sources.map((link) => `<li>${escape(link.sourceUrl)} — href: ${escape(link.href)}</li>`).join("")}</ul>
 ${destination.finalUrl === undefined ? "" : `<h3>Final response</h3><p>${escape(destination.finalUrl)}</p><pre>${escape(JSON.stringify(destination.responseHeaders ?? {}, null, 2))}</pre>`}
 ${(destination.redirects?.length ?? 0) > 0 ? `<h3>Informational redirects</h3><ul>${destination.redirects!.map((redirect) => `<li>${escape(redirect.url)} — HTTP ${redirect.status} → ${escape(redirect.target ?? "Unresolved target")} (Location: ${escape(redirect.location)}; after ${redirect.attempts} attempts)<pre>${escape(JSON.stringify(redirect.responseHeaders, null, 2))}</pre></li>`).join("")}</ul>` : ""}</section>`;
