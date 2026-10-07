@@ -11,7 +11,23 @@ export interface TransportRequest {
   identity: string;
   signal: AbortSignal;
 }
-export type AuditTransport = (request: TransportRequest) => Promise<Response>;
+export interface AuditResponse extends Response {
+  /** Original field boundaries, when available; Headers merges repeated fields. */
+  rawHeaders?: readonly string[];
+}
+export type AuditTransport = (request: TransportRequest) => Promise<AuditResponse>;
+
+export function responseHeaderValues(response: AuditResponse, name: string): string[] {
+  if (response.rawHeaders !== undefined) {
+    const values: string[] = [];
+    for (let index = 0; index < response.rawHeaders.length; index += 2)
+      if (response.rawHeaders[index]!.toLowerCase() === name.toLowerCase())
+        values.push(response.rawHeaders[index + 1]!);
+    return values;
+  }
+  const value = response.headers.get(name);
+  return value === null ? [] : [value];
+}
 export type AuditDns = (hostname: string) => Promise<string[]>;
 export const publicDns: AuditDns = async (hostname) =>
   (await lookup(hostname, { all: true, order: "verbatim" })).map((answer) => answer.address);
@@ -67,7 +83,11 @@ export const productionTransport: AuditTransport = ({ url, address, identity, si
           ? null
           : (Readable.toWeb(incoming) as ReadableStream<Uint8Array>);
         if (body === null) incoming.resume();
-        resolve(new Response(body, { status, headers }));
+        resolve(
+          Object.assign(new Response(body, { status, headers }), {
+            rawHeaders: incoming.rawHeaders,
+          }),
+        );
       },
     );
     request.on("error", reject);

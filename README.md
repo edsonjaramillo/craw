@@ -2,8 +2,8 @@
 
 A Bun website auditor, under development. The current flow discovers navigation
 links within the crawl boundary, with public-only, address-pinned HTTP(S), robots
-rules, retained SQLite runs, and a standalone HTML report. It does not yet inspect
-SEO. Public, robots-permitted redirects are followed for response health.
+rules, retained SQLite runs, and a standalone HTML report with page-local SEO
+observations. Public, robots-permitted redirects are followed for response health.
 
 ## Configuration and execution
 
@@ -87,7 +87,7 @@ consumed; other destination bodies are canceled after status is established.
 HTML gzip/deflate/Brotli content encodings are decoded, and HTTP/BOM/meta charset
 evidence is honored by Cheerio's encoding sniffer. Unsupported or invalid content
 encodings retain response health but explicitly limit discovery and SEO eligibility.
-No full-download integrity or SEO finding claim is made. Robots 404/410
+No full-download integrity claim is made. Robots 404/410
 allows access, 401/403 excludes all, and unavailable rules fail closed. Neither
 robots nor destination redirects can bypass public-address validation, connection
 pinning, request pacing, retries, or the run deadline. Robots redirects are
@@ -127,8 +127,15 @@ Page, HTML-link depth (start is zero), and checked-destination budgets are
 independent. Page/depth exclusions prevent expansion, not destination health
 checks; check-only destinations do not consume page/depth budgets. Excluded work
 is retained and produces visible limitations and a partial, limit-stopped report.
-Successful eligible pages are retained for future SEO inspection; actual SEO
-checks belong to the next implementation stage.
+Successful eligible HTML pages, including noindex pages, receive page-local SEO
+observations. Missing/empty titles and missing/multiple H1s are warnings;
+missing/empty descriptions and indexing directives are informational. Evidence
+includes declaration values and heading counts/text. Generic (`*`) and bot-specific
+robots meta and X-Robots-Tag scopes are retained without deciding indexing intent
+or resolving conflicting directives. Original repeated header field boundaries
+are preserved by the production transport. Observations are retained per run in
+SQLite and grouped by issue in the escaped report. Duplicate metadata and canonical
+checks are not yet implemented.
 Non-HTML GET checks establish response health, not complete download integrity;
 response streams are canceled without downloading the entire body.
 

@@ -8,6 +8,7 @@ import {
   DestinationRefused,
   productionTransport,
   publicDns,
+  responseHeaderValues,
   validateDestinationUrl,
   type AuditDns,
   type AuditTransport,
@@ -15,6 +16,7 @@ import {
 import { HtmlInspectionUnavailable, readHtml } from "./html";
 import { crawlIdentity, inBoundary, navigationLinks, traverse } from "./navigation";
 import { readRobots } from "./robots-body";
+import { inspectSeo } from "./seo";
 
 class RobotsAccessDenied extends Error {
   constructor(
@@ -83,6 +85,7 @@ export async function runAudit(
   const destinations: DestinationResult[] = [];
   const pages: AuditRun["pages"] = [];
   const links: AuditRun["links"] = [];
+  const observations: AuditRun["observations"] = [];
   const limitations: string[] = [];
   const expanded = new Set<string>();
   let checked = 0;
@@ -151,6 +154,7 @@ export async function runAudit(
     }
     checked++;
     let html: Awaited<ReturnType<typeof readHtml>> | undefined;
+    let indexingHeaders: string[] = [];
     try {
       const { value: response, attempts } = await followRedirects(
         new URL(destination.url),
@@ -159,6 +163,7 @@ export async function runAudit(
         async (incoming, signal, finalUrl) => {
           destination.finalUrl = finalUrl.href;
           destination.responseHeaders = Object.fromEntries(incoming.headers);
+          indexingHeaders = responseHeaderValues(incoming, "x-robots-tag");
           const identity = crawlIdentity(finalUrl.href, configuration);
           const eligible =
             incoming.ok &&
@@ -239,6 +244,7 @@ export async function runAudit(
       const identity = crawlIdentity(pageUrl, configuration);
       expanded.add(identity);
       pages.push({ url: pageUrl, crawlIdentity: identity, depth, seoEligible: true });
+      observations.push(...inspectSeo(html, pageUrl, indexingHeaders));
       for (const link of navigationLinks(html, pageUrl)) {
         links.push({ sourceUrl: pageUrl, ...link });
         await enqueue(link.destinationUrl, depth + 1);
@@ -277,6 +283,7 @@ export async function runAudit(
     destinations,
     pages,
     links,
+    observations,
     limitations,
   };
   const databasePath = dependencies.databasePath ?? "audit.sqlite";
