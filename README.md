@@ -71,6 +71,13 @@ website-derived evidence and distinguish execution completion from coverage.
 Refused, robots-excluded, unavailable, and inconclusive destinations are never
 reported as healthy. Fatal execution/storage errors exit nonzero, while
 attempting to preserve a failed run and partial report independently.
+Execution status is `completed`, `limit-stopped`, or `failed`; none establishes
+complete coverage or website health. Deadline expiry cancels in-flight work and
+stops further checks. Already discovered navigation and canonical destinations
+remain attributable to their source pages even when they cannot be checked.
+Collected findings survive later failures. Limits produce a partial report;
+fatal execution failures also exit 1. If either artifact path is unavailable,
+the other is still attempted with the failed execution status.
 
 Requests use GET through a shared scheduler with a global concurrency cap and
 per-hostname request-start spacing. Each hostname is also serialized through body

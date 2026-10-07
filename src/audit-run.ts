@@ -1,6 +1,7 @@
 import robotsParser from "robots-parser";
 
 import { validateAuditConfig } from "./audit-config";
+import { AuditExecutionFailure } from "./audit-execution-failure";
 import { persistRun, renderReport, type AuditRun, type DestinationResult } from "./audit-results";
 import { canonicalDeclarations, distinctCanonicalTargets } from "./canonicals";
 import { createGuardedFetch, RunLimitReached } from "./guarded-fetch";
@@ -86,7 +87,19 @@ export async function runAudit(
     };
   }
   const startingDestination = newDestination(url.href);
-  const destinations: DestinationResult[] = [];
+  const destinations: DestinationResult[] = [startingDestination];
+  const registered = new Map([[startingDestination.url, startingDestination]]);
+  const visited = new Set<string>();
+  const finalizedChecks = new Set<string>();
+  function register(target: string): DestinationResult {
+    let destination = registered.get(target);
+    if (!destination) {
+      destination = newDestination(target);
+      registered.set(target, destination);
+      destinations.push(destination);
+    }
+    return destination;
+  }
   const pages: AuditRun["pages"] = [];
   const links: AuditRun["links"] = [];
   const observations: AuditRun["observations"] = [];
@@ -125,7 +138,12 @@ export async function runAudit(
         };
         policies.set(target.origin, policy);
       } catch (error) {
-        if (error instanceof DestinationRefused || error instanceof RunLimitReached) throw error;
+        if (
+          error instanceof DestinationRefused ||
+          error instanceof RunLimitReached ||
+          error instanceof AuditExecutionFailure
+        )
+          throw error;
         throw new RobotsAccessDenied(
           "robots-unavailable",
           error instanceof Error ? error.message : String(error),
@@ -151,12 +169,15 @@ export async function runAudit(
     enqueue: (url: string, depth: number) => Promise<void>,
     expand = true,
   ) {
-    destinations.push(destination);
+    if (clock.now() >= start + configuration.limits.maxDurationMs)
+      throw new RunLimitReached("Run-duration limit reached.");
+    visited.add(destination.url);
     if (checked >= configuration.limits.maxDestinations) {
       executionStatus = "limit-stopped";
       destination.outcome = "limit-stopped";
       destination.evidence = "Checked-destination budget excluded this destination.";
       limitations.push(`${destination.url}: ${destination.evidence}`);
+      finalizedChecks.add(destination.url);
       return;
     }
     checked++;
@@ -172,15 +193,19 @@ export async function runAudit(
           destination.responseHeaders = Object.fromEntries(incoming.headers);
           indexingHeaders = responseHeaderValues(incoming, "x-robots-tag");
           const identity = crawlIdentity(finalUrl.href, configuration);
-          const eligible =
-            expand &&
+          const successfulHtml =
             incoming.ok &&
-            inBoundary(new URL(destination.url), configuration) &&
-            inBoundary(finalUrl, configuration) &&
             /^(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/iu.test(
               incoming.headers.get("content-type") ?? "",
-            ) &&
-            !expanded.has(identity);
+            );
+          const withinBoundary =
+            inBoundary(new URL(destination.url), configuration) &&
+            inBoundary(finalUrl, configuration);
+          if (successfulHtml && (!expand || !withinBoundary))
+            limitations.push(
+              `${destination.url}: ${expand ? "Crawl boundary" : "Canonical-only target"} excluded HTML discovery and SEO eligibility at ${finalUrl.href}; response health was checked independently.`,
+            );
+          const eligible = expand && successfulHtml && withinBoundary && !expanded.has(identity);
           if (eligible) {
             if (
               depth > configuration.limits.maxDepth ||
@@ -229,17 +254,21 @@ export async function runAudit(
       if (destination.outcome === "redirect-not-followed")
         destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
     } catch (error) {
-      if (error instanceof RunLimitReached) executionStatus = "limit-stopped";
+      if (error instanceof AuditExecutionFailure) throw error;
+      if (error instanceof RunLimitReached) {
+        destination.outcome = "limit-stopped";
+        destination.evidence = error.message;
+        throw error;
+      }
       destination.outcome =
-        error instanceof RunLimitReached
-          ? "limit-stopped"
-          : error instanceof DestinationRefused
-            ? "refused"
-            : error instanceof RobotsAccessDenied || error instanceof RedirectFailure
-              ? error.outcome
-              : "inconclusive";
+        error instanceof DestinationRefused
+          ? "refused"
+          : error instanceof RobotsAccessDenied || error instanceof RedirectFailure
+            ? error.outcome
+            : "inconclusive";
       destination.evidence = error instanceof Error ? error.message : String(error);
     }
+    finalizedChecks.add(destination.url);
     if (
       destination.outcome !== "successful" &&
       destination.outcome !== "confirmed-broken" &&
@@ -270,54 +299,60 @@ export async function runAudit(
           severity: "warning",
           evidence: JSON.stringify(declarations),
         });
-      for (const link of navigationLinks(html, pageUrl)) {
-        links.push({ sourceUrl: pageUrl, ...link });
-        await enqueue(link.destinationUrl, depth + 1);
+      for (const declaration of declarations) {
+        const target = declaration.destinationUrl;
+        if (target !== undefined && ["http:", "https:"].includes(new URL(target).protocol))
+          register(target);
       }
+      const discovered = navigationLinks(html, pageUrl);
+      for (const link of discovered) {
+        links.push({ sourceUrl: pageUrl, ...link });
+        register(link.destinationUrl);
+      }
+      for (const link of discovered) await enqueue(link.destinationUrl, depth + 1);
     }
   }
   try {
     await traverse(url.href, async (target, depth, enqueue) => {
-      await visit(
-        target === startingDestination.url ? startingDestination : newDestination(target),
-        depth,
-        enqueue,
-      );
+      await visit(register(target), depth, enqueue);
     });
     // Navigation owns expansion. Canonical-only references share exact-destination checks,
     // but are never queued as crawl candidates, even when inside the boundary.
-    const checkedTargets = new Map(
-      destinations.map((destination) => [destination.url, destination]),
-    );
     for (const declaration of canonicals) {
       const target = declaration.destinationUrl;
       if (target === undefined || !["http:", "https:"].includes(new URL(target).protocol)) continue;
-      if (!checkedTargets.has(target)) {
-        const destination = newDestination(target);
-        checkedTargets.set(target, destination);
-        await visit(destination, 0, () => Promise.resolve(), false);
+      if (!visited.has(target)) {
+        await visit(registered.get(target)!, 0, () => Promise.resolve(), false);
       }
     }
-    for (const [sourceUrl, declarations] of Map.groupBy(
-      canonicals,
-      (declaration) => declaration.sourceUrl,
-    )) {
-      const broken = distinctCanonicalTargets(declarations)
-        .map((target) => checkedTargets.get(target))
-        .filter((destination) => destination?.outcome === "confirmed-broken");
-      if (broken.length > 0)
-        observations.push({
-          url: sourceUrl,
-          kind: "broken-canonical",
-          severity: "error",
-          evidence: JSON.stringify(broken),
-        });
-    }
   } catch (error) {
-    executionStatus = "failed";
-    limitations.push(
-      `Fatal traversal failure: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    executionStatus = error instanceof RunLimitReached ? "limit-stopped" : "failed";
+    const evidence = `${executionStatus === "failed" ? "Fatal traversal failure" : "Execution limit"}: ${error instanceof Error ? error.message : String(error)}`;
+    limitations.push(evidence);
+    for (const destination of destinations) {
+      if (!finalizedChecks.has(destination.url)) {
+        destination.outcome =
+          executionStatus === "limit-stopped" ? "limit-stopped" : "inconclusive";
+        destination.evidence = `${visited.has(destination.url) ? "Response health not established" : "Not checked"}: ${evidence}`;
+        limitations.push(`${destination.url}: ${destination.evidence}`);
+      }
+    }
+  }
+  // Derive findings from retained evidence even when later traversal/checks failed.
+  for (const [sourceUrl, declarations] of Map.groupBy(
+    canonicals,
+    (declaration) => declaration.sourceUrl,
+  )) {
+    const broken = distinctCanonicalTargets(declarations)
+      .map((target) => registered.get(target))
+      .filter((destination) => destination?.outcome === "confirmed-broken");
+    if (broken.length > 0)
+      observations.push({
+        url: sourceUrl,
+        kind: "broken-canonical",
+        severity: "error",
+        evidence: JSON.stringify(broken),
+      });
   }
   const run: AuditRun = {
     id: crypto.randomUUID(),

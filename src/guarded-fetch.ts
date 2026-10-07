@@ -1,4 +1,5 @@
 import type { AuditConfig } from "./audit-config";
+import { AuditExecutionFailure } from "./audit-execution-failure";
 import type { AuditClock } from "./audit-run";
 import {
   DestinationRefused,
@@ -86,6 +87,17 @@ export function createGuardedFetch(
     if (milliseconds <= 0) throw new RunLimitReached("Run-duration limit reached.");
     return milliseconds;
   }
+  async function sleep(milliseconds: number, signal: AbortSignal) {
+    try {
+      await clock.sleep(milliseconds, signal);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new AuditExecutionFailure(
+        `Scheduler failure: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  }
   async function bounded<T>(
     budget: number,
     durationLimited: boolean,
@@ -93,11 +105,12 @@ export function createGuardedFetch(
   ): Promise<T> {
     const controller = new AbortController();
     const timerController = new AbortController();
-    const timeout = clock.sleep(budget, timerController.signal).then(() => {
+    const timeout = (async () => {
+      await sleep(budget, timerController.signal);
       throw durationLimited
         ? new RunLimitReached("Run-duration limit reached.")
         : new Error("Request timeout; response health is inconclusive.");
-    });
+    })();
     try {
       return await Promise.race([operation(controller.signal), timeout]);
     } finally {
@@ -108,7 +121,7 @@ export function createGuardedFetch(
   async function wait(milliseconds: number) {
     if (milliseconds > 0) {
       const budget = remaining();
-      await bounded(budget, true, (signal) => clock.sleep(Math.min(milliseconds, budget), signal));
+      await bounded(budget, true, (signal) => sleep(Math.min(milliseconds, budget), signal));
     }
     remaining();
   }
@@ -195,6 +208,7 @@ export function createGuardedFetch(
       } catch (error) {
         if (
           error instanceof RunLimitReached ||
+          error instanceof AuditExecutionFailure ||
           error instanceof DestinationRefused ||
           error instanceof InvalidRobotsRules
         )

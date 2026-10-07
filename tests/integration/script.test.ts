@@ -22,6 +22,40 @@ test.each([
   expect(stdout).not.toContain("Hello via Bun");
 });
 
+test("fatal execution exits nonzero and writes failed partial artifacts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "craw-script-execution-"));
+  try {
+    const preload = join(directory, "configure.ts");
+    await Bun.write(
+      preload,
+      `
+      import { config } from ${JSON.stringify(new URL("../../src/config.ts", import.meta.url).href)};
+      import { systemClock } from ${JSON.stringify(new URL("../../src/audit-run.ts", import.meta.url).href)};
+      config.startUrl = "http://127.0.0.1/";
+      systemClock.sleep = () => { throw new Error("Injected fatal scheduler failure"); };
+      process.chdir(${JSON.stringify(directory)});
+    `,
+    );
+    const process = Bun.spawn(["bun", "--preload", preload, join(root, "src/index.ts")], {
+      cwd: root,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout] = await Promise.all([
+      process.exited,
+      new Response(process.stdout).text(),
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stdout).toContain("failed");
+    const report = await Bun.file(join(directory, "audit-report.html")).text();
+    expect(report).toContain("Partial report");
+    expect(report).toContain("Injected fatal scheduler failure");
+    expect(await Bun.file(join(directory, "audit.sqlite")).exists()).toBe(true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("valid configuration exits nonzero on a fatal persistence failure without live network work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "craw-script-"));
   try {
