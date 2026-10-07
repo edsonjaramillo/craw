@@ -9,8 +9,11 @@ export interface SeoObservation {
     | "empty-description"
     | "missing-h1"
     | "multiple-h1"
-    | "indexing-directives";
-  severity: "warning" | "info";
+    | "indexing-directives"
+    | "missing-canonical"
+    | "conflicting-canonicals"
+    | "broken-canonical";
+  severity: "error" | "warning" | "info";
   evidence: string;
   /** '*' denotes generic directives, not an assertion of indexing intent. */
   scope?: string;

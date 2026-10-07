@@ -79,9 +79,11 @@ test("retains generic and bot-specific indexing evidence without treating noinde
   expect(
     result.run.observations.find((observation) => observation.scope === "googlebot")?.evidence,
   ).toContain("nofollow, noarchive");
-  expect(result.run.observations.at(-1)?.evidence).toContain(
-    "unavailable_after: 25 Jun 2030 15:00:00 PST",
-  );
+  expect(
+    result.run.observations.find(
+      (observation) => observation.scope === "bingbot" && observation.source === "header",
+    )?.evidence,
+  ).toContain("unavailable_after: 25 Jun 2030 15:00:00 PST");
   expect(
     result.run.observations.some((observation) => observation.kind === "empty-description"),
   ).toBe(true);
@@ -138,7 +140,11 @@ test("keeps separate X-Robots-Tag field scopes rather than leaking a bot scope i
           ),
     ),
   );
-  expect(result.run.observations.map(({ scope, source }) => [scope, source])).toEqual([
+  expect(
+    result.run.observations
+      .filter((observation) => observation.kind === "indexing-directives")
+      .map(({ scope, source }) => [scope, source]),
+  ).toEqual([
     ["googlebot", "header"],
     ["*", "header"],
   ]);
@@ -215,7 +221,11 @@ test("inspects only final successful in-boundary HTML, including noindex, and es
       ],
     },
   ]);
-  expect(result.run.observations.map((observation) => observation.url)).toEqual([
+  expect(
+    result.run.observations
+      .filter((observation) => observation.kind !== "missing-canonical")
+      .map((observation) => observation.url),
+  ).toEqual([
     "https://site.example/blog/landing",
     "https://site.example/blog/landing",
     "https://site.example/blog/noindex",
@@ -251,7 +261,9 @@ test("does not confuse SVG titles or descriptive metadata with page SEO evidence
       ],
     },
   ]);
-  expect(result.run.observations).toEqual([
+  expect(
+    result.run.observations.filter((observation) => observation.kind !== "missing-canonical"),
+  ).toEqual([
     {
       url: "https://site.example/blog",
       kind: "missing-title",
@@ -284,7 +296,11 @@ test("reports missing versus empty metadata and H1 counts with severities and re
       ],
     },
   ]);
-  expect(result.run.observations.map(({ url, kind, severity }) => [url, kind, severity])).toEqual([
+  expect(
+    result.run.observations
+      .filter((observation) => observation.kind !== "missing-canonical")
+      .map(({ url, kind, severity }) => [url, kind, severity]),
+  ).toEqual([
     ["https://site.example/blog", "missing-title", "warning"],
     ["https://site.example/blog", "missing-description", "info"],
     ["https://site.example/blog", "missing-h1", "warning"],
@@ -292,7 +308,9 @@ test("reports missing versus empty metadata and H1 counts with severities and re
     ["https://site.example/blog/empty", "empty-description", "info"],
     ["https://site.example/blog/empty", "multiple-h1", "warning"],
   ]);
-  expect(result.run.observations.at(-1)?.evidence).toContain("First & heading");
+  expect(
+    result.run.observations.find((observation) => observation.kind === "multiple-h1")?.evidence,
+  ).toContain("First & heading");
   expect(result.report).toContain("multiple-h1");
   expect(result.report).toContain("warning");
   expect(result.report).toContain("First &amp; heading");
@@ -306,7 +324,10 @@ test("reports missing versus empty metadata and H1 counts with severities and re
     ).toEqual(result.run.observations.map(({ url, kind, severity }) => ({ url, kind, severity })));
     expect(
       db.query("SELECT evidence FROM seo_observations WHERE kind = 'multiple-h1'").get(),
-    ).toEqual({ evidence: result.run.observations.at(-1)!.evidence });
+    ).toEqual({
+      evidence: result.run.observations.find((observation) => observation.kind === "multiple-h1")!
+        .evidence,
+    });
   } finally {
     db.close();
   }

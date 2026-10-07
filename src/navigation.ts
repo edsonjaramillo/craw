@@ -89,10 +89,7 @@ export function crawlIdentity(url: string, configuration: AuditConfig): string {
   return identity.href;
 }
 
-export function navigationLinks(
-  $: CheerioAPI,
-  pageUrl: string,
-): { href: string; destinationUrl: string }[] {
+export function htmlBase($: CheerioAPI, pageUrl: string): string {
   let base = pageUrl;
   for (const element of $("base[href]").toArray()) {
     try {
@@ -105,6 +102,14 @@ export function navigationLinks(
       /* Ignore malformed base declarations. */
     }
   }
+  return base;
+}
+
+export function navigationLinks(
+  $: CheerioAPI,
+  pageUrl: string,
+): { href: string; destinationUrl: string }[] {
+  const base = htmlBase($, pageUrl);
   return $("a[href], area[href]")
     .toArray()
     .flatMap((element) => {

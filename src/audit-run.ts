@@ -2,6 +2,7 @@ import robotsParser from "robots-parser";
 
 import { validateAuditConfig } from "./audit-config";
 import { persistRun, renderReport, type AuditRun, type DestinationResult } from "./audit-results";
+import { canonicalDeclarations } from "./canonicals";
 import { createGuardedFetch, RunLimitReached } from "./guarded-fetch";
 import { followRedirects, RedirectFailure } from "./guarded-redirects";
 import {
@@ -86,6 +87,7 @@ export async function runAudit(
   const pages: AuditRun["pages"] = [];
   const links: AuditRun["links"] = [];
   const observations: AuditRun["observations"] = [];
+  const canonicals: AuditRun["canonicals"] = [];
   const metadata: PageMetadata[] = [];
   const limitations: string[] = [];
   const expanded = new Set<string>();
@@ -144,6 +146,7 @@ export async function runAudit(
     destination: DestinationResult,
     depth: number,
     enqueue: (url: string, depth: number) => Promise<void>,
+    expand = true,
   ) {
     destinations.push(destination);
     if (checked >= configuration.limits.maxDestinations) {
@@ -167,6 +170,7 @@ export async function runAudit(
           indexingHeaders = responseHeaderValues(incoming, "x-robots-tag");
           const identity = crawlIdentity(finalUrl.href, configuration);
           const eligible =
+            expand &&
             incoming.ok &&
             inBoundary(new URL(destination.url), configuration) &&
             inBoundary(finalUrl, configuration) &&
@@ -247,6 +251,22 @@ export async function runAudit(
       pages.push({ url: pageUrl, crawlIdentity: identity, depth, seoEligible: true });
       observations.push(...inspectSeo(html, pageUrl, indexingHeaders));
       metadata.push(readMetadata(html, pageUrl));
+      const declarations = canonicalDeclarations(html, pageUrl);
+      canonicals.push(...declarations);
+      if (declarations.length === 0)
+        observations.push({
+          url: pageUrl,
+          kind: "missing-canonical",
+          severity: "info",
+          evidence: "No canonical declaration found.",
+        });
+      if (new Set(declarations.flatMap((declaration) => declaration.destinationUrl ?? [])).size > 1)
+        observations.push({
+          url: pageUrl,
+          kind: "conflicting-canonicals",
+          severity: "warning",
+          evidence: JSON.stringify(declarations),
+        });
       for (const link of navigationLinks(html, pageUrl)) {
         links.push({ sourceUrl: pageUrl, ...link });
         await enqueue(link.destinationUrl, depth + 1);
@@ -269,6 +289,43 @@ export async function runAudit(
         enqueue,
       );
     });
+    // Navigation owns expansion. Canonical-only references share exact-destination checks,
+    // but are never queued as crawl candidates, even when inside the boundary.
+    const checkedTargets = new Map(
+      destinations.map((destination) => [destination.url, destination]),
+    );
+    for (const declaration of canonicals) {
+      const target = declaration.destinationUrl;
+      if (target === undefined || !["http:", "https:"].includes(new URL(target).protocol)) continue;
+      if (!checkedTargets.has(target)) {
+        const destination: DestinationResult = {
+          url: target,
+          crawlIdentity: crawlIdentity(target, configuration),
+          outcome: "inconclusive",
+          evidence: "No response established.",
+          redirects: [],
+        };
+        checkedTargets.set(target, destination);
+        await visit(destination, 0, () => Promise.resolve(), false);
+      }
+    }
+    for (const [sourceUrl, declarations] of Map.groupBy(
+      canonicals,
+      (declaration) => declaration.sourceUrl,
+    )) {
+      const broken = [
+        ...new Set(declarations.flatMap((declaration) => declaration.destinationUrl ?? [])),
+      ]
+        .map((target) => checkedTargets.get(target))
+        .filter((destination) => destination?.outcome === "confirmed-broken");
+      if (broken.length > 0)
+        observations.push({
+          url: sourceUrl,
+          kind: "broken-canonical",
+          severity: "error",
+          evidence: JSON.stringify(broken),
+        });
+    }
   } catch (error) {
     executionStatus = "failed";
     limitations.push(
@@ -286,6 +343,7 @@ export async function runAudit(
     pages,
     links,
     observations,
+    canonicals,
     duplicateMetadata: duplicateMetadata(metadata),
     limitations,
   };
