@@ -17,6 +17,66 @@ export interface SeoObservation {
   source?: "meta" | "header";
 }
 
+export interface PageMetadata {
+  url: string;
+  titles: string[];
+  descriptions: string[];
+}
+export interface DuplicateMetadata {
+  kind: "duplicate-title" | "duplicate-description";
+  severity: "warning";
+  scope: "within-this-run";
+  value: string;
+  pages: { url: string; values: string[] }[];
+}
+
+/** The caller establishes successful HTML eligibility and crawl-identity uniqueness. */
+export function readMetadata(html: CheerioAPI, url: string): PageMetadata {
+  return {
+    url,
+    titles: html("title")
+      .toArray()
+      .filter((element) => element.namespace === "http://www.w3.org/1999/xhtml")
+      .map((element) => html(element).text()),
+    descriptions: html("meta[name]")
+      .toArray()
+      .filter((element) => html(element).attr("name")?.toLowerCase() === "description")
+      .map((element) => html(element).attr("content") ?? ""),
+  };
+}
+
+export function duplicateMetadata(pages: PageMetadata[]): DuplicateMetadata[] {
+  const duplicates: DuplicateMetadata[] = [];
+  for (const [field, kind] of [
+    ["titles", "duplicate-title"],
+    ["descriptions", "duplicate-description"],
+  ] as const) {
+    const groups = new Map<string, Map<string, string[]>>();
+    for (const page of pages) {
+      for (const raw of page[field]) {
+        const value = raw.trim().replaceAll(/\s+/gu, " ");
+        if (!value) continue;
+        let group = groups.get(value);
+        if (!group) groups.set(value, (group = new Map<string, string[]>()));
+        const values = group.get(page.url) ?? [];
+        values.push(raw);
+        group.set(page.url, values);
+      }
+    }
+    for (const [value, group] of groups) {
+      if (group.size < 2) continue;
+      duplicates.push({
+        kind,
+        severity: "warning",
+        scope: "within-this-run",
+        value,
+        pages: [...group].map(([url, values]) => ({ url, values })),
+      });
+    }
+  }
+  return duplicates;
+}
+
 /** Page-local evidence only; the caller establishes successful HTML eligibility. */
 export function inspectSeo(
   html: CheerioAPI,
@@ -24,14 +84,7 @@ export function inspectSeo(
   indexingHeaders: string[],
 ): SeoObservation[] {
   const observations: SeoObservation[] = [];
-  const titles = html("title")
-    .toArray()
-    .filter((element) => element.namespace === "http://www.w3.org/1999/xhtml")
-    .map((element) => html(element).text());
-  const descriptions = html("meta[name]")
-    .toArray()
-    .filter((element) => html(element).attr("name")?.toLowerCase() === "description")
-    .map((element) => html(element).attr("content") ?? "");
+  const { titles, descriptions } = readMetadata(html, url);
   for (const [field, values, severity] of [
     ["title", titles, "warning"],
     ["description", descriptions, "info"],

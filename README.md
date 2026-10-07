@@ -3,7 +3,7 @@
 A Bun website auditor, under development. The current flow discovers navigation
 links within the crawl boundary, with public-only, address-pinned HTTP(S), robots
 rules, retained SQLite runs, and a standalone HTML report with page-local SEO
-observations. Public, robots-permitted redirects are followed for response health.
+observations and within-run duplicate metadata groups. Public, robots-permitted redirects are followed for response health.
 
 ## Configuration and execution
 
@@ -134,8 +134,12 @@ includes declaration values and heading counts/text. Generic (`*`) and bot-speci
 robots meta and X-Robots-Tag scopes are retained without deciding indexing intent
 or resolving conflicting directives. Original repeated header field boundaries
 are preserved by the production transport. Observations are retained per run in
-SQLite and grouped by issue in the escaped report. Duplicate metadata and canonical
-checks are not yet implemented.
+SQLite and grouped by issue in the escaped report. Nonempty titles and descriptions
+are compared after trimming and collapsing whitespace, preserving case. Duplicate
+groups are warnings with affected pages and original values, retained in the
+`duplicate_metadata` SQLite table and the report. Only audited pages within this
+run contribute; partial coverage is not a website-wide inventory, and retained
+runs never contribute to each other's groups. Canonical checks are not yet implemented.
 Non-HTML GET checks establish response health, not complete download integrity;
 response streams are canceled without downloading the entire body.
 

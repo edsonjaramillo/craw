@@ -16,7 +16,7 @@ import {
 import { HtmlInspectionUnavailable, readHtml } from "./html";
 import { crawlIdentity, inBoundary, navigationLinks, traverse } from "./navigation";
 import { readRobots } from "./robots-body";
-import { inspectSeo } from "./seo";
+import { duplicateMetadata, inspectSeo, readMetadata, type PageMetadata } from "./seo";
 
 class RobotsAccessDenied extends Error {
   constructor(
@@ -86,6 +86,7 @@ export async function runAudit(
   const pages: AuditRun["pages"] = [];
   const links: AuditRun["links"] = [];
   const observations: AuditRun["observations"] = [];
+  const metadata: PageMetadata[] = [];
   const limitations: string[] = [];
   const expanded = new Set<string>();
   let checked = 0;
@@ -245,6 +246,7 @@ export async function runAudit(
       expanded.add(identity);
       pages.push({ url: pageUrl, crawlIdentity: identity, depth, seoEligible: true });
       observations.push(...inspectSeo(html, pageUrl, indexingHeaders));
+      metadata.push(readMetadata(html, pageUrl));
       for (const link of navigationLinks(html, pageUrl)) {
         links.push({ sourceUrl: pageUrl, ...link });
         await enqueue(link.destinationUrl, depth + 1);
@@ -284,6 +286,7 @@ export async function runAudit(
     pages,
     links,
     observations,
+    duplicateMetadata: duplicateMetadata(metadata),
     limitations,
   };
   const databasePath = dependencies.databasePath ?? "audit.sqlite";
