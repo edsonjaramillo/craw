@@ -1,6 +1,12 @@
 # dependencies (bun install)
 node_modules
 
+# Generated audit artifacts
+/audit.sqlite
+/audit.sqlite-shm
+/audit.sqlite-wal
+/audit-report.html
+
 # dotenv environment variable files
 .env
 .env.local

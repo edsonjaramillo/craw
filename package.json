@@ -5,6 +5,7 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "test": "bun test",
+    "fixtures": "bun run tests/fixtures/run.ts",
     "typecheck": "tsc --noEmit",
     "format": "oxfmt .",
     "lint": "oxlint --type-aware --type-check .",

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -22,16 +22,17 @@ test.each([
   expect(stdout).not.toContain("Hello via Bun");
 });
 
-test("valid configuration still exits nonzero when audit execution fails", async () => {
+test("valid configuration exits nonzero on a fatal persistence failure without live network work", async () => {
   const directory = await mkdtemp(join(tmpdir(), "craw-script-"));
   try {
     const preload = join(directory, "configure.ts");
     const configModule = new URL("../../src/config.ts", import.meta.url).href;
+    await mkdir(join(directory, "audit.sqlite"));
     await Bun.write(
       preload,
-      `import { config } from ${JSON.stringify(configModule)}; config.startUrl = "https://example.com/";`,
+      `import { config } from ${JSON.stringify(configModule)}; config.startUrl = "http://127.0.0.1/"; process.chdir(${JSON.stringify(directory)});`,
     );
-    const process = Bun.spawn(["bun", "--preload", preload, "src/index.ts"], {
+    const process = Bun.spawn(["bun", "--preload", preload, join(root, "src/index.ts")], {
       cwd: root,
       stdout: "pipe",
       stderr: "pipe",
@@ -41,8 +42,12 @@ test("valid configuration still exits nonzero when audit execution fails", async
       new Response(process.stderr).text(),
     ]);
     expect(exitCode).toBe(1);
-    expect(stderr).toContain("Audit execution is not implemented yet");
+    expect(stderr).toMatch(/database|sqlite|directory|open/iu);
     expect(stderr).not.toContain("Invalid audit configuration");
+    const report = await Bun.file(join(directory, "audit-report.html")).text();
+    expect(report).toContain("Partial report");
+    expect(report).toContain("failed");
+    expect(report).toContain("refused");
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
