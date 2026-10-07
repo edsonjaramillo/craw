@@ -41,6 +41,9 @@ export interface AuditRun {
   finishedAt: string;
   executionStatus: "completed" | "limit-stopped" | "failed";
   destination: DestinationResult;
+  destinations: DestinationResult[];
+  pages: { url: string; crawlIdentity: string; depth: number; seoEligible: boolean }[];
+  links: { sourceUrl: string; href: string; destinationUrl: string }[];
   limitations: string[];
 }
 
@@ -60,6 +63,14 @@ export function persistRun(path: string, run: AuditRun): void {
         run_id TEXT NOT NULL, url TEXT NOT NULL, evidence TEXT NOT NULL,
         PRIMARY KEY (run_id, url), FOREIGN KEY (run_id, url) REFERENCES destinations(run_id, url)
       );
+      CREATE TABLE IF NOT EXISTS pages (
+        run_id TEXT NOT NULL REFERENCES runs(id), url TEXT NOT NULL, crawl_identity TEXT NOT NULL,
+        depth INTEGER NOT NULL, seo_eligible INTEGER NOT NULL, PRIMARY KEY (run_id, crawl_identity)
+      );
+      CREATE TABLE IF NOT EXISTS source_links (
+        run_id TEXT NOT NULL REFERENCES runs(id), source_url TEXT NOT NULL,
+        href TEXT NOT NULL, destination_url TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS coverage_limitations (
         run_id TEXT NOT NULL REFERENCES runs(id), evidence TEXT NOT NULL
       );`);
@@ -73,27 +84,45 @@ export function persistRun(path: string, run: AuditRun): void {
         run.finishedAt,
         run.executionStatus,
       );
-      const destination = run.destination;
-      db.query(
-        "INSERT INTO destinations VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id, url) DO UPDATE SET outcome = excluded.outcome, status = excluded.status, evidence = excluded.evidence",
-      ).run(
-        run.id,
-        destination.url,
-        destination.outcome,
-        destination.status ?? null,
-        destination.evidence,
-      );
-      db.query(
-        "INSERT INTO destination_responses VALUES (?, ?, ?) ON CONFLICT(run_id, url) DO UPDATE SET evidence = excluded.evidence",
-      ).run(
-        run.id,
-        destination.url,
-        JSON.stringify({
-          finalUrl: destination.finalUrl,
-          responseHeaders: destination.responseHeaders,
-          redirects: destination.redirects ?? [],
-        }),
-      );
+      for (const destination of run.destinations) {
+        db.query(
+          "INSERT INTO destinations VALUES (?, ?, ?, ?, ?) ON CONFLICT(run_id, url) DO UPDATE SET outcome = excluded.outcome, status = excluded.status, evidence = excluded.evidence",
+        ).run(
+          run.id,
+          destination.url,
+          destination.outcome,
+          destination.status ?? null,
+          destination.evidence,
+        );
+        db.query(
+          "INSERT INTO destination_responses VALUES (?, ?, ?) ON CONFLICT(run_id, url) DO UPDATE SET evidence = excluded.evidence",
+        ).run(
+          run.id,
+          destination.url,
+          JSON.stringify({
+            finalUrl: destination.finalUrl,
+            responseHeaders: destination.responseHeaders,
+            redirects: destination.redirects ?? [],
+          }),
+        );
+      }
+      db.query("DELETE FROM pages WHERE run_id = ?").run(run.id);
+      for (const page of run.pages)
+        db.query("INSERT INTO pages VALUES (?, ?, ?, ?, ?)").run(
+          run.id,
+          page.url,
+          page.crawlIdentity,
+          page.depth,
+          Number(page.seoEligible),
+        );
+      db.query("DELETE FROM source_links WHERE run_id = ?").run(run.id);
+      for (const link of run.links)
+        db.query("INSERT INTO source_links VALUES (?, ?, ?, ?)").run(
+          run.id,
+          link.sourceUrl,
+          link.href,
+          link.destinationUrl,
+        );
       db.query("DELETE FROM coverage_limitations WHERE run_id = ?").run(run.id);
       for (const evidence of run.limitations)
         db.query("INSERT INTO coverage_limitations VALUES (?, ?)").run(run.id, evidence);
@@ -111,15 +140,22 @@ function escape(value: string): string {
   );
 }
 export function renderReport(run: AuditRun): string {
-  const destination = run.destination;
+  const results = run.destinations
+    .map((destination) => {
+      const sources = run.links.filter((link) => link.destinationUrl === destination.url);
+      return `<section><h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
+<h3>Source pages and discovered URL evidence</h3><ul>${sources.map((link) => `<li>${escape(link.sourceUrl)} — href: ${escape(link.href)}</li>`).join("")}</ul>
+${destination.finalUrl === undefined ? "" : `<h3>Final response</h3><p>${escape(destination.finalUrl)}</p><pre>${escape(JSON.stringify(destination.responseHeaders ?? {}, null, 2))}</pre>`}
+${(destination.redirects?.length ?? 0) > 0 ? `<h3>Informational redirects</h3><ul>${destination.redirects!.map((redirect) => `<li>${escape(redirect.url)} — HTTP ${redirect.status} → ${escape(redirect.target ?? "Unresolved target")} (Location: ${escape(redirect.location)}; after ${redirect.attempts} attempts)<pre>${escape(JSON.stringify(redirect.responseHeaders, null, 2))}</pre></li>`).join("")}</ul>` : ""}</section>`;
+    })
+    .join("");
   return `<!doctype html><html lang="en"><meta charset="utf-8"><title>Website audit</title>
 <style>body{font:1rem system-ui;max-width:70rem;margin:2rem auto;padding:1rem}dt,h2{font-weight:bold}dd{overflow-wrap:anywhere}</style>
-<h1>Website audit</h1>${run.executionStatus === "completed" ? "" : "<p>Partial report: execution stopped at a configured limit or fatal failure.</p>"}<p>Single-destination coverage: this run does not establish complete website health.</p>
+<h1>Website audit</h1>${run.executionStatus === "completed" ? "" : "<p>Partial report: execution stopped at a configured limit or fatal failure.</p>"}<p>${run.destinations.length === 1 ? "Single-destination coverage: this" : "This"} run does not establish complete website health. SEO checks are not yet implemented.</p>
 <dl><dt>Run</dt><dd>${escape(run.id)}</dd><dt>Execution</dt><dd>${run.executionStatus}</dd><dt>Started</dt><dd>${escape(run.startedAt)}</dd><dt>Finished</dt><dd>${escape(run.finishedAt)}</dd></dl>
-<h2>Summary</h2><p>Destinations retained: 1. Confirmed broken links: ${destination.outcome === "confirmed-broken" ? 1 : 0}. Coverage limitations: ${run.limitations.length}.</p>
-<h2>${escape(destination.outcome)}</h2><dl><dt>Original destination</dt><dd>${escape(destination.url)}</dd><dt>Evidence</dt><dd>${escape(destination.evidence)}</dd></dl>
-${destination.finalUrl === undefined ? "" : `<h2>Final response</h2><p>${escape(destination.finalUrl)}</p><pre>${escape(JSON.stringify(destination.responseHeaders ?? {}, null, 2))}</pre>`}
-${(destination.redirects?.length ?? 0) > 0 ? `<h2>Informational redirects</h2><ul>${destination.redirects!.map((redirect) => `<li>${escape(redirect.url)} — HTTP ${redirect.status} → ${escape(redirect.target ?? "Unresolved target")} (Location: ${escape(redirect.location)}; after ${redirect.attempts} attempts)<pre>${escape(JSON.stringify(redirect.responseHeaders, null, 2))}</pre></li>`).join("")}</ul>` : ""}
+<h2>Summary</h2><p>Destinations retained: ${run.destinations.length}. Confirmed broken links: ${run.destinations.filter((destination) => destination.outcome === "confirmed-broken").length}. Pages eligible for SEO: ${run.pages.length}. Coverage limitations: ${run.limitations.length}.</p>
+<h2>Pages</h2><ul>${run.pages.map((page) => `<li>${escape(page.url)} — depth ${page.depth}, crawl identity: ${escape(page.crawlIdentity)}</li>`).join("")}</ul>
+${results}
 <h2>Coverage limitations</h2><ul>${run.limitations.map((value) => `<li>${escape(value)}</li>`).join("")}</ul>
 <h2>Effective configuration</h2><pre>${escape(JSON.stringify(run.configuration, null, 2))}</pre></html>`;
 }

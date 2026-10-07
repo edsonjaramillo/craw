@@ -12,6 +12,8 @@ import {
   type AuditDns,
   type AuditTransport,
 } from "./guarded-transport";
+import { HtmlInspectionUnavailable, readHtml } from "./html";
+import { crawlIdentity, inBoundary, navigationLinks, traverse } from "./navigation";
 import { readRobots } from "./robots-body";
 
 class RobotsAccessDenied extends Error {
@@ -59,7 +61,7 @@ export interface AuditResult {
   reportPath: string;
 }
 
-/** A single-destination audit. Every dispatch, including robots, goes through the public guard. */
+/** Every dispatch, including discovery, robots and redirects, goes through the public guard. */
 export async function runAudit(
   input: unknown,
   dependencies: AuditDependencies = {},
@@ -71,15 +73,18 @@ export async function runAudit(
   const start = clock.now();
   const url = new URL(configuration.startUrl);
   url.hash = "";
-  const destination: DestinationResult = {
+  const startingDestination: DestinationResult = {
     url: url.href,
     outcome: "inconclusive",
     evidence: "No response established.",
     redirects: [],
   };
-  const limitations = [
-    "Only the starting destination was checked; no link discovery or SEO inspection was performed.",
-  ];
+  const destinations: DestinationResult[] = [];
+  const pages: AuditRun["pages"] = [];
+  const links: AuditRun["links"] = [];
+  const limitations: string[] = [];
+  const expanded = new Set<string>();
+  let checked = 0;
   let executionStatus: AuditRun["executionStatus"] = "completed";
   const fetchGuarded = createGuardedFetch(configuration, clock, dns, transport, start);
   const policies = new Map<
@@ -130,67 +135,146 @@ export async function runAudit(
       `Robots rules prevented access to ${target.href} (HTTP ${policy.status} after ${policy.attempts} attempts).`,
     );
   }
-  try {
-    const { value: response, attempts } = await followRedirects(
-      url,
-      fetchGuarded,
-      configuration.requests.maxRedirectHops,
-      (incoming, _signal, finalUrl) => {
-        destination.finalUrl = finalUrl.href;
-        destination.responseHeaders = Object.fromEntries(incoming.headers);
-        return {
-          status: incoming.status,
-          ok: incoming.ok,
-          location: incoming.headers.get("location"),
-        };
-      },
-      destination.redirects!,
-      authorize,
-    );
-    destination.status = response.status;
-    destination.outcome =
-      response.status === 404 || response.status === 410
-        ? "confirmed-broken"
-        : response.ok
-          ? "successful"
-          : response.status >= 500
-            ? "server-error"
-            : response.status === 401 || response.status === 403
-              ? "inaccessible"
-              : response.status === 408 || response.status === 429
-                ? "inconclusive"
-                : response.status >= 300 && response.status < 400
-                  ? "redirect-not-followed"
-                  : "client-error";
-    destination.evidence = `GET response health evidence: HTTP ${response.status} after ${attempts} attempts at the final destination. Response body was not downloaded; download integrity was not checked.`;
-    if (destination.outcome === "redirect-not-followed")
-      destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
-  } catch (error) {
-    if (error instanceof RunLimitReached) executionStatus = "limit-stopped";
-    destination.outcome =
-      error instanceof RunLimitReached
-        ? "limit-stopped"
-        : error instanceof DestinationRefused
-          ? "refused"
-          : error instanceof RobotsAccessDenied || error instanceof RedirectFailure
-            ? error.outcome
-            : "inconclusive";
-    destination.evidence = error instanceof Error ? error.message : String(error);
+  async function visit(
+    destination: DestinationResult,
+    depth: number,
+    enqueue: (url: string, depth: number) => Promise<void>,
+  ) {
+    destinations.push(destination);
+    if (checked >= configuration.limits.maxDestinations) {
+      executionStatus = "limit-stopped";
+      destination.outcome = "limit-stopped";
+      destination.evidence = "Checked-destination budget excluded this destination.";
+      limitations.push(`${destination.url}: ${destination.evidence}`);
+      return;
+    }
+    checked++;
+    let html: Awaited<ReturnType<typeof readHtml>> | undefined;
+    try {
+      const { value: response, attempts } = await followRedirects(
+        new URL(destination.url),
+        fetchGuarded,
+        configuration.requests.maxRedirectHops,
+        async (incoming, signal, finalUrl) => {
+          destination.finalUrl = finalUrl.href;
+          destination.responseHeaders = Object.fromEntries(incoming.headers);
+          const identity = crawlIdentity(finalUrl.href, configuration);
+          const eligible =
+            incoming.ok &&
+            inBoundary(new URL(destination.url), configuration) &&
+            inBoundary(finalUrl, configuration) &&
+            /^(?:text\/html|application\/xhtml\+xml)(?:\s*;|\s*$)/iu.test(
+              incoming.headers.get("content-type") ?? "",
+            ) &&
+            !expanded.has(identity);
+          if (eligible) {
+            if (
+              depth > configuration.limits.maxDepth ||
+              pages.length >= configuration.limits.maxPages
+            ) {
+              executionStatus = "limit-stopped";
+              limitations.push(
+                `${finalUrl.href}: ${depth > configuration.limits.maxDepth ? "HTML-link depth" : "Page"} budget excluded expansion and SEO eligibility.`,
+              );
+            } else {
+              try {
+                html = await readHtml(incoming, signal);
+              } catch (error) {
+                if (!(error instanceof HtmlInspectionUnavailable)) throw error;
+                limitations.push(
+                  `${finalUrl.href}: HTML discovery and SEO eligibility unavailable: ${error.message}`,
+                );
+              }
+            }
+          }
+          return {
+            status: incoming.status,
+            ok: incoming.ok,
+            location: incoming.headers.get("location"),
+          };
+        },
+        destination.redirects!,
+        authorize,
+      );
+      destination.status = response.status;
+      destination.outcome =
+        response.status === 404 || response.status === 410
+          ? "confirmed-broken"
+          : response.ok
+            ? "successful"
+            : response.status >= 500
+              ? "server-error"
+              : response.status === 401 || response.status === 403
+                ? "inaccessible"
+                : response.status === 408 || response.status === 429
+                  ? "inconclusive"
+                  : response.status >= 300 && response.status < 400
+                    ? "redirect-not-followed"
+                    : "client-error";
+      destination.evidence = `GET response health evidence: HTTP ${response.status} after ${attempts} attempts at the final destination. ${html === undefined ? "HTML body inspection was not completed; download integrity was not checked." : "Successful in-boundary HTML inspected for navigation links."}`;
+      if (destination.outcome === "redirect-not-followed")
+        destination.evidence += ` Redirect was not followed${response.location === null ? "." : `: ${response.location}`}`;
+    } catch (error) {
+      if (error instanceof RunLimitReached) executionStatus = "limit-stopped";
+      destination.outcome =
+        error instanceof RunLimitReached
+          ? "limit-stopped"
+          : error instanceof DestinationRefused
+            ? "refused"
+            : error instanceof RobotsAccessDenied || error instanceof RedirectFailure
+              ? error.outcome
+              : "inconclusive";
+      destination.evidence = error instanceof Error ? error.message : String(error);
+    }
+    if (
+      destination.outcome !== "successful" &&
+      destination.outcome !== "confirmed-broken" &&
+      destination.outcome !== "server-error" &&
+      destination.outcome !== "client-error"
+    )
+      limitations.push(`${destination.url}: ${destination.outcome}: ${destination.evidence}`);
+    if (html !== undefined && destination.outcome === "successful") {
+      const pageUrl = destination.finalUrl!;
+      const identity = crawlIdentity(pageUrl, configuration);
+      expanded.add(identity);
+      pages.push({ url: pageUrl, crawlIdentity: identity, depth, seoEligible: true });
+      for (const link of navigationLinks(html, pageUrl)) {
+        links.push({ sourceUrl: pageUrl, ...link });
+        await enqueue(link.destinationUrl, depth + 1);
+      }
+    }
   }
-  if (
-    destination.outcome !== "successful" &&
-    destination.outcome !== "confirmed-broken" &&
-    destination.outcome !== "server-error" &&
-    destination.outcome !== "client-error"
-  )
-    limitations.push(`${destination.outcome}: ${destination.evidence}`);
+  try {
+    await traverse(url.href, async (target, depth, enqueue) => {
+      await visit(
+        target === startingDestination.url
+          ? startingDestination
+          : {
+              url: target,
+              outcome: "inconclusive",
+              evidence: "No response established.",
+              redirects: [],
+            },
+        depth,
+        enqueue,
+      );
+    });
+  } catch (error) {
+    executionStatus = "failed";
+    limitations.push(
+      `Fatal traversal failure: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const run: AuditRun = {
     id: crypto.randomUUID(),
     configuration,
     startedAt: new Date(start).toISOString(),
     finishedAt: new Date(clock.now()).toISOString(),
     executionStatus,
-    destination,
+    destination: startingDestination,
+    destinations,
+    pages,
+    links,
     limitations,
   };
   const databasePath = dependencies.databasePath ?? "audit.sqlite";

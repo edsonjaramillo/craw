@@ -61,7 +61,7 @@ bun test tests/integration/configuration.test.ts
 bun run test
 ```
 
-## Single-destination runs
+## Audit runs
 
 `runAudit(input, dependencies?)` validates first and defaults to `audit.sqlite`
 and `audit-report.html` in the working directory. It returns the retained run,
@@ -75,21 +75,26 @@ attempting to preserve a failed run and partial report independently.
 Requests use GET through a shared scheduler with a global concurrency cap and
 per-hostname request-start spacing. Each hostname is also serialized through body
 consumption; different hostnames can use separate global slots. The current
-single-destination run is sequential. Scheduling, retry waits, DNS, requests, and
+navigation traversal is sequential. Scheduling, retry waits, DNS, requests, and
 body reads are bounded by the run deadline; each network attempt also has a
 request timeout. Aborted attempts retain their slots until transport/body cleanup
 settles, so a retry cannot overlap unfinished cancellation; queued retries still
 stop at the run deadline. Robots bodies have a
 512 KiB safety cap. Production requests ask for identity encoding; undecoded
 compressed robots rules are treated as unavailable rather than interpreted as
-empty rules. Destination response bodies are canceled after status is
-established; no full-download integrity or SEO claim is made. Robots 404/410
+empty rules. Only final successful, in-boundary HTML eligible for expansion is
+consumed; other destination bodies are canceled after status is established.
+HTML gzip/deflate/Brotli content encodings are decoded, and HTTP/BOM/meta charset
+evidence is honored by Cheerio's encoding sniffer. Unsupported or invalid content
+encodings retain response health but explicitly limit discovery and SEO eligibility.
+No full-download integrity or SEO finding claim is made. Robots 404/410
 allows access, 401/403 excludes all, and unavailable rules fail closed. Neither
 robots nor destination redirects can bypass public-address validation, connection
 pinning, request pacing, retries, or the run deadline. Robots redirects are
 bootstrapped without recursive robots retrieval; destination hops are authorized
-against rules cached by origin and evaluated for each path. Crawlee is not dispatched in
-this single-destination stage, so its internals cannot issue unguarded requests.
+against rules cached by origin and evaluated for each path. CheerioCrawler owns
+the deduplicated work queue and lifecycle; its HTTP request handler is replaced
+with guarded fetching, so its HTTP client and automatic redirects never dispatch.
 HTTP 408/429/5xx and network failures receive at most the configured number of
 retries (two by default). Backoff starts at one second, doubles, and caps at thirty
 seconds; a valid Retry-After delay or HTTP date can extend the wait. Exhausted
@@ -104,7 +109,19 @@ Only 404/410 are confirmed broken links; persistent 5xx, 401/403, other unexpect
 4xx, and exhausted transient/network failures retain separate server-error,
 inaccessible, client-error, and inconclusive outcomes in SQLite and the report.
 Attempt counts accompany response/failure evidence.
-Crawl/SEO budgets become relevant when traversal lands in later tickets.
+Navigation discovery uses anchor and image-map area hrefs, honors valid HTML base
+URLs, removes fragments, and preserves query ordering and encoding. Exact hostname
+and segment-aware path boundaries admit both standard-port HTTP and HTTPS as
+distinct identities. External/out-of-path destinations and cross-boundary final
+redirects are checked without expansion or SEO eligibility. Tracking exclusions
+apply only to expansion identity; original destinations receive independent checks.
+SQLite and reports retain every source relationship and discovered href.
+Page, HTML-link depth (start is zero), and checked-destination budgets are
+independent. Page/depth exclusions prevent expansion, not destination health
+checks; check-only destinations do not consume page/depth budgets. Excluded work
+is retained and produces visible limitations and a partial, limit-stopped report.
+Successful eligible pages are retained for future SEO inspection; actual SEO
+checks belong to the next implementation stage.
 Non-HTML GET checks establish response health, not complete download integrity;
 response streams are canceled without downloading the entire body.
 

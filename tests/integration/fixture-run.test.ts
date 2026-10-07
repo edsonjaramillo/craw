@@ -20,7 +20,7 @@ for (const [status, outcome] of [
   [408, "inconclusive"],
   [302, "refused"],
 ] as const) {
-  test(`real fixture GET ${status} retains ${outcome} without dispatching unsafe targets or discovering links`, async () => {
+  test(`real fixture GET ${status} retains ${outcome} and discovers only successful HTML`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "craw-fixture-"));
     const fixture = startFixture({
       name: "status",
@@ -56,6 +56,7 @@ for (const [status, outcome] of [
       expect(fixture.requests.map((request) => [request.method, request.url])).toEqual([
         ["GET", "https://public.example/robots.txt"],
         ["GET", "https://public.example/"],
+        ...(status === 200 ? [["GET", "https://public.example/must-not-discover"]] : []),
       ]);
       expect(result.report).not.toContain("<script>");
       if (status === 302) expect(result.report).toContain("&lt;script&gt;");
