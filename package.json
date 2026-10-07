@@ -4,6 +4,7 @@
   "module": "src/index.ts",
   "scripts": {
     "start": "bun run src/index.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit",
     "format": "oxfmt .",
     "lint": "oxlint --type-aware --type-check .",
