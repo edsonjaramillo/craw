@@ -93,16 +93,18 @@ ${(destination.redirects?.length ?? 0) > 0 ? `<h5>Informational redirects</h5><u
       return `<section id="issue-${outcome}" data-issue="${outcome}" data-severity="${group.severity}" data-category="${group.category}"><h3>${group.title} — ${outcome} (${destinations.length})</h3><p>Classification: ${group.severity}</p>${destinations.map((destination) => destinationEvidence(destination)).join("")}</section>`;
     })
     .join("");
-  const seo = [...Map.groupBy(run.observations, (observation) => observation.kind)]
+  const observationGroups = Map.groupBy(run.observations, (observation) => observation.kind);
+  const duplicateGroups = Map.groupBy(run.duplicateMetadata, (group) => group.kind);
+  const seo = [...observationGroups]
     .map(
       ([kind, observations]) =>
         `<section id="issue-${escape(kind)}" data-issue="${escape(kind)}" data-severity="${escape(observations[0]!.severity)}" data-category="seo"><h3>${escape(kind)} (${observations.length})</h3><ul>${observations.map((observation) => `<li><strong>${escape(observation.severity)}</strong> — ${reference(observation.url)}${observation.scope === undefined ? "" : ` — scope: ${escape(observation.scope)} (${escape(observation.source ?? "unspecified")})`}<pre>${escape(observation.evidence)}</pre></li>`).join("")}</ul></section>`,
     )
     .join("");
-  const duplicates = [...Map.groupBy(run.duplicateMetadata, (group) => group.kind)]
+  const duplicates = [...duplicateGroups]
     .map(
-      ([kind, duplicateGroups]) =>
-        `<section id="issue-${escape(kind)}" data-issue="${escape(kind)}" data-severity="warning" data-category="seo"><h3>${escape(kind)} — within this run (${duplicateGroups.length} groups)</h3>${duplicateGroups.map((group) => `<article><p><strong>${escape(group.severity)}</strong> — compared value: ${escape(group.value)}</p><h4>Affected pages and supporting values</h4><ul>${group.pages.map((page) => `<li>${reference(page.url)}<pre>${escape(JSON.stringify(page.values))}</pre></li>`).join("")}</ul></article>`).join("")}</section>`,
+      ([kind, metadataGroups]) =>
+        `<section id="issue-${escape(kind)}" data-issue="${escape(kind)}" data-severity="warning" data-category="seo"><h3>${escape(kind)} — within this run (${metadataGroups.length} groups)</h3>${metadataGroups.map((group) => `<article><p><strong>${escape(group.severity)}</strong> — compared value: ${escape(group.value)}</p><h4>Affected pages and supporting values</h4><ul>${group.pages.map((page) => `<li>${reference(page.url)}<pre>${escape(JSON.stringify(page.values))}</pre></li>`).join("")}</ul></article>`).join("")}</section>`,
     )
     .join("");
   const seoCount = (severity: string) =>
@@ -118,8 +120,8 @@ ${(destination.redirects?.length ?? 0) > 0 ? `<h5>Informational redirects</h5><u
   const issueKinds = [
     ...groups.keys(),
     ...(redirected.length === 0 ? [] : ["redirects"]),
-    ...new Set(run.observations.map((observation) => observation.kind)),
-    ...new Set(run.duplicateMetadata.map((group) => group.kind)),
+    ...observationGroups.keys(),
+    ...duplicateGroups.keys(),
   ];
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Website audit</title>
 <style>body{font:1rem system-ui;max-width:70rem;margin:2rem auto;padding:1rem}dt,h2{font-weight:bold}dd,pre,a{overflow-wrap:anywhere}pre{white-space:pre-wrap}article,section{border-top:1px solid #aaa;padding-top:1rem}a{color:#145caa}h3,h4{scroll-margin-top:1rem}</style></head><body>

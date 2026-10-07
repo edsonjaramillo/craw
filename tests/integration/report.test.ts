@@ -20,10 +20,18 @@ test("standalone issue groups reconcile mixed outcomes, sources and evidence wit
         path: "/",
         responses: [
           html(
-            '<title>Shared</title><meta name="description" content="Shared description"><h1>Home</h1><link rel="canonical" href="/gone"><a href="/gone#source">gone</a><a href="/missing">missing</a><a href="/server">server</a><a href="/private">private</a><a href="/client">client</a><a href="/transient">transient</a><a href="/excluded">excluded</a><a href="http://127.0.0.1/">refused</a><a href="/loop">loop</a><a href="/redirect">redirect</a><a href="/second">second</a>',
+            '<title>Shared</title><meta name="description" content="Shared description"><h1>Home</h1><link rel="canonical" href="/gone"><a href="/gone#source">gone</a><a href="/missing">missing</a><a href="/server">server</a><a href="/private">private</a><a href="/client">client</a><a href="/transient">transient</a><a href="/excluded">excluded</a><a href="http://127.0.0.1/">refused</a><a href="/loop">loop</a><a href="/redirect">redirect</a><a href="/second">second</a><a href="/third">third</a><a href="/fourth">fourth</a>',
           ),
         ],
       },
+      ...["/third", "/fourth"].map((path) => ({
+        path,
+        responses: [
+          html(
+            '<title>Other shared title</title><meta name="description" content="Other description"><h1>Other</h1>',
+          ),
+        ],
+      })),
       { path: "/robots.txt", responses: [{ body: "User-agent: *\nDisallow: /excluded" }] },
       { path: "/gone", responses: [{ status: 410 }] },
       { path: "/missing", responses: [{ status: 404 }] },
@@ -132,8 +140,34 @@ test("standalone issue groups reconcile mixed outcomes, sources and evidence wit
       expect($("#attribution").text()).toContain(run.finished_at);
       expect($("#attribution").text()).toContain(run.execution_status);
       expect($("#attribution").text()).toContain(result.run.id);
-      expect($('[data-count="seo-pages"]').text()).toBe("2");
-      expect($('[data-count="duplicate-groups"]').text()).toBe("2");
+      expect($('[data-count="seo-pages"]').text()).toBe("4");
+      const duplicateRows = db
+        .query<{ kind: string; severity: string; value: string; pages: string }, [string]>(
+          "SELECT kind, severity, value, pages FROM duplicate_metadata WHERE run_id = ?",
+        )
+        .all(result.run.id);
+      expect(duplicateRows).toHaveLength(4);
+      expect($('[data-count="duplicate-groups"]').text()).toBe(String(duplicateRows.length));
+      for (const row of duplicateRows) {
+        const issue = $(`[data-issue="${row.kind}"]`);
+        expect(issue.attr("data-severity")).toBe(row.severity);
+        expect(issue.find("article")).toHaveLength(2);
+        const group = issue
+          .find("article")
+          .filter(
+            (_index, article) =>
+              $(article).find("p").text() === `${row.severity} — compared value: ${row.value}`,
+          );
+        expect(group).toHaveLength(1);
+        const pages = group
+          .find("li")
+          .toArray()
+          .map((page) => ({
+            url: $(page).find("a").first().attr("href"),
+            values: JSON.parse($(page).find("pre").text()) as unknown,
+          }));
+        expect(JSON.parse(row.pages) as unknown).toEqual(pages);
+      }
       expect($('[data-issue="duplicate-title"]').text()).toContain("within this run");
       expect($('[data-issue="broken-canonical"]').attr("data-severity")).toBe("error");
       expect($("#coverage").text()).toContain("Coverage limitations");

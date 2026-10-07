@@ -4,6 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { load } from "cheerio";
+
 import { runAudit } from "../../src/audit-run";
 import { ManualClock, flush } from "../fixtures/clock";
 import { createNetwork } from "../fixtures/network";
@@ -62,7 +64,7 @@ for (const [status, outcome, attempts] of [
       expect(
         network.requests.filter((request) => new URL(request.url).pathname === "/"),
       ).toHaveLength(attempts);
-      expect(audit.report).toContain(`<h2>${outcome}</h2>`);
+      expect(load(audit.report)(`[data-issue="${outcome}"] [data-destination]`)).toHaveLength(1);
       expect(audit.report).toContain(
         `Confirmed broken links: ${outcome === "confirmed-broken" ? 1 : 0}`,
       );
