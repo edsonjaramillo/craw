@@ -40,7 +40,7 @@ export function validateDestinationUrl(url: URL): void {
   }
 }
 
-export async function validateDestination(url: URL, dns: AuditDns): Promise<string> {
+export async function validateDestination(url: URL, dns: AuditDns): Promise<string[]> {
   validateDestinationUrl(url);
   const hostname = url.hostname.replaceAll(/^\[|\]$/gu, "");
   const addresses = ipaddr.isValid(hostname) ? [hostname] : await dns(hostname);
@@ -52,7 +52,8 @@ export async function validateDestination(url: URL, dns: AuditDns): Promise<stri
   ) {
     throw new DestinationRefused("Destination has non-public or unavailable network addresses.");
   }
-  return addresses[0]!;
+  // Validate the entire answer set before allowing any address to be dispatched.
+  return [...new Set(addresses)];
 }
 
 /** No redirects or secondary DNS lookup. TLS verifies the logical hostname using system trust. */

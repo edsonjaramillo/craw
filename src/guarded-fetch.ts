@@ -5,11 +5,24 @@ import {
   DestinationRefused,
   validateDestination,
   type AuditDns,
+  type AuditResponse,
   type AuditTransport,
 } from "./guarded-transport";
 import { InvalidRobotsRules } from "./robots-body";
 
 export class RunLimitReached extends Error {}
+
+/** Only pre-response connection failures permit trying another pinned address. */
+function connectionFailed(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  return (
+    syscall === "connect" &&
+    ["ECONNREFUSED", "ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL", "ETIMEDOUT"].includes(
+      code ?? "",
+    )
+  );
+}
 
 /** A cancellation-aware permit pool. Waiting never counts as a network request. */
 function permits(capacity: number) {
@@ -152,16 +165,39 @@ export function createGuardedFetch(
           available <= configuration.requests.timeoutMs,
           async (signal) => {
             try {
-              const address = await validateDestination(url, dns);
-              signal.throwIfAborted();
-              host.previousStart = clock.now();
-              dispatched = true;
-              const response = await transport({
-                url,
-                address,
-                identity: configuration.crawlerIdentity,
-                signal,
-              });
+              const addresses = await validateDestination(url, dns);
+              let response: AuditResponse | undefined;
+              for (const [index, address] of addresses.entries()) {
+                signal.throwIfAborted();
+                if (index > 0) {
+                  // Fallbacks share the attempt deadline and pressure-control permits.
+                  await sleep(
+                    Math.max(
+                      0,
+                      (host.previousStart ?? -Infinity) +
+                        configuration.requests.hostnameIntervalMs -
+                        clock.now(),
+                    ),
+                    signal,
+                  );
+                  signal.throwIfAborted();
+                }
+                host.previousStart = clock.now();
+                dispatched = true;
+                try {
+                  response = await transport({
+                    url,
+                    address,
+                    identity: configuration.crawlerIdentity,
+                    signal,
+                  });
+                  break;
+                } catch (error) {
+                  if (signal.aborted || !connectionFailed(error) || index === addresses.length - 1)
+                    throw error;
+                }
+              }
+              if (!response) throw new Error("No validated destination address available.");
               try {
                 signal.throwIfAborted();
                 // Cool down the hostname, not just this caller, including after exhausted retries.
